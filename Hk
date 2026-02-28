@@ -1,0 +1,1788 @@
+--[[
+	WARNING: Heads up! This script has not been verified by ScriptBlox. Use at your own risk!
+]]
+-- Xenure Hub | Flick
+-- Clean FPS script with Luna UI
+
+local Luna = loadstring(game:HttpGet("https://raw.githubusercontent.com/Nebula-Softworks/Luna-Interface-Suite/main/source.lua"))()
+
+local Window = Luna:CreateWindow({
+    Name = "Xenure Hub | Flick",
+    LoadingTitle = "Xenure Hub",
+    LoadingSubtitle = "by Xenure",
+    ConfigurationSaving = {
+        Enabled = true,
+        FolderName = "XenureHub",
+        FileName = "FlickConfig"
+    },
+    Discord = {Enabled = false, Invite = "", RememberJoins = false},
+    KeySystem = false
+})
+
+-- ============================================
+-- SERVICES
+-- ============================================
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Camera = workspace.CurrentCamera
+local LocalPlayer = Players.LocalPlayer
+local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+
+-- ============================================
+-- VARIABLES
+-- ============================================
+
+-- Combat
+local aimlockEnabled = false
+local aimbotEnabled = false
+local smoothAim = false
+local aimPart = "Head"
+local fovEnabled = false
+local fovSize = 100
+local fovCircle = nil
+local smoothness = 0.4
+local wallCheck = true
+local targetPlayer = nil
+
+-- ESP
+local espEnabled = false
+local ESPObjects = {}
+
+-- X-Ray
+local xrayEnabled = false
+local originalTransparencies = {}
+
+-- Movement
+local infiniteJumpEnabled = false
+local infiniteJumpConnection = nil
+
+-- God Mode
+local isGodmode = false
+local godmodeUserWants = false
+local ghostClone, gmConnection, noclipConn, deathConn = nil, nil, nil, nil
+local lastPromptUpdate = 0
+
+-- Instant Interact
+local interactActive = false
+local interactConnection = nil
+local interactDescendantConn = nil
+
+-- Auto Hit
+local autoHitEnabled = false
+local autoHitThread = nil
+local attackSpeed = 0.3
+
+-- Anti Hit
+local antiHitEnabled = false
+local antiHitConn1 = nil
+local antiHitConn2 = nil
+local antiHitSafeDist = 14
+local antiHitBVs = {}
+
+-- Auto Farm
+local autoFarmEnabled = false
+local farmThread = nil
+local selectedFarmCategories = {}
+local safeZonePosition = nil
+local undergroundDepth = 20
+local farmGhostClone = nil
+local farmNoclipConn = nil
+local farmHeartbeatConn = nil
+local farmDeathConn = nil
+local farmStatus = "Idle"
+local farmCollecting = false
+local farmStatusParagraph = nil
+local farmTotalCollected = 0
+local farmScanInterval = 0.5
+
+local allFarmCategories = {
+    "Common", "Uncommon", "Rare", "Epic",
+    "Legendary", "Mythic", "Celestial",
+    "Divino", "Infinity"
+}
+local categoryPriority = {
+    ["Infinity"] = 1, ["Divino"] = 2, ["Celestial"] = 3,
+    ["Mythic"] = 4, ["Legendary"] = 5, ["Epic"] = 6,
+    ["Rare"] = 7, ["Uncommon"] = 8, ["Common"] = 9
+}
+
+-- ============================================
+-- FOV CIRCLE
+-- ============================================
+local function createFOVCircle()
+    if fovCircle then fovCircle:Remove() end
+    fovCircle = Drawing.new("Circle")
+    fovCircle.Thickness = 2
+    fovCircle.NumSides = 50
+    fovCircle.Radius = fovSize
+    fovCircle.Filled = false
+    fovCircle.Transparency = 1
+    fovCircle.Color = Color3.fromRGB(255, 255, 255)
+    fovCircle.Visible = false
+    fovCircle.ZIndex = 2
+end
+
+local function updateFOVCircle()
+    if fovCircle then
+        fovCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+        fovCircle.Radius = fovSize
+        fovCircle.Visible = fovEnabled and (aimlockEnabled or aimbotEnabled)
+    end
+end
+
+-- ============================================
+-- TARGETING
+-- ============================================
+local function getClosestPlayerToCursor()
+    local closestPlayer, shortestDist = nil, fovEnabled and fovSize or math.huge
+    local mousePos = UserInputService:GetMouseLocation()
+
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+            local humanoid = player.Character:FindFirstChild("Humanoid")
+            if humanoid and humanoid.Health > 0 then
+                local tPart = player.Character:FindFirstChild(aimPart)
+                if tPart then
+                    local screenPos, onScreen = Camera:WorldToViewportPoint(tPart.Position)
+                    if onScreen then
+                        local dist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+                        if wallCheck then
+                            local ray = Ray.new(Camera.CFrame.Position, (tPart.Position - Camera.CFrame.Position).Unit * 1000)
+                            local hit = workspace:FindPartOnRayWithIgnoreList(ray, {LocalPlayer.Character})
+                            if hit and hit:IsDescendantOf(player.Character) and dist < shortestDist then
+                                closestPlayer = player
+                                shortestDist = dist
+                            end
+                        else
+                            if dist < shortestDist then
+                                closestPlayer = player
+                                shortestDist = dist
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return closestPlayer
+end
+
+-- ============================================
+-- AIMLOCK
+-- ============================================
+local function aimlock()
+    if not aimlockEnabled then return end
+    local target = getClosestPlayerToCursor()
+    if target and target.Character then
+        local tPart = target.Character:FindFirstChild(aimPart)
+        if tPart then
+            local dir = (tPart.Position - Camera.CFrame.Position).Unit
+            if smoothAim then
+                Camera.CFrame = Camera.CFrame:Lerp(CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + dir), smoothness)
+            else
+                Camera.CFrame = CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + dir)
+            end
+        end
+    end
+end
+
+-- ============================================
+-- AIMBOT (SILENT)
+-- ============================================
+local function aimbot()
+    if not aimbotEnabled then return end
+    targetPlayer = getClosestPlayerToCursor()
+end
+
+-- ============================================
+-- ESP
+-- ============================================
+local function createESP(Player)
+    if ESPObjects[Player] or Player == LocalPlayer then return end
+    local E = {
+        Box = Drawing.new("Square"), BoxOutline = Drawing.new("Square"),
+        CornerTL = Drawing.new("Line"), CornerTR = Drawing.new("Line"),
+        CornerBL = Drawing.new("Line"), CornerBR = Drawing.new("Line"),
+        Tracer = Drawing.new("Line"), Name = Drawing.new("Text"),
+        Distance = Drawing.new("Text"), Health = Drawing.new("Text"),
+        HealthBar = Drawing.new("Line"), HealthBarOutline = Drawing.new("Line")
+    }
+
+    E.Box.Thickness = 2 E.Box.Filled = false E.Box.Color = Color3.fromRGB(255, 0, 0)
+    E.Box.Visible = false E.Box.ZIndex = 2 E.Box.Transparency = 1
+
+    E.BoxOutline.Thickness = 4 E.BoxOutline.Filled = false E.BoxOutline.Color = Color3.fromRGB(0, 0, 0)
+    E.BoxOutline.Visible = false E.BoxOutline.ZIndex = 1 E.BoxOutline.Transparency = 0.8
+
+    for _, corner in pairs({E.CornerTL, E.CornerTR, E.CornerBL, E.CornerBR}) do
+        corner.Thickness = 3 corner.Color = Color3.fromRGB(255, 255, 255)
+        corner.Visible = false corner.ZIndex = 3 corner.Transparency = 1
+    end
+
+    E.Tracer.Thickness = 2 E.Tracer.Color = Color3.fromRGB(255, 0, 0)
+    E.Tracer.Visible = false E.Tracer.ZIndex = 1 E.Tracer.Transparency = 0.5
+
+    E.Name.Size = 16 E.Name.Center = true E.Name.Outline = true E.Name.Font = 3
+    E.Name.Color = Color3.fromRGB(255, 255, 255) E.Name.Visible = false E.Name.ZIndex = 3 E.Name.Transparency = 1
+
+    E.Distance.Size = 13 E.Distance.Center = true E.Distance.Outline = true E.Distance.Font = 2
+    E.Distance.Color = Color3.fromRGB(200, 200, 255) E.Distance.Visible = false E.Distance.ZIndex = 3 E.Distance.Transparency = 1
+
+    E.Health.Size = 13 E.Health.Center = true E.Health.Outline = true E.Health.Font = 2
+    E.Health.Color = Color3.fromRGB(0, 255, 0) E.Health.Visible = false E.Health.ZIndex = 3 E.Health.Transparency = 1
+
+    E.HealthBar.Thickness = 3 E.HealthBar.Color = Color3.fromRGB(0, 255, 0)
+    E.HealthBar.Visible = false E.HealthBar.ZIndex = 3 E.HealthBar.Transparency = 1
+
+    E.HealthBarOutline.Thickness = 5 E.HealthBarOutline.Color = Color3.fromRGB(0, 0, 0)
+    E.HealthBarOutline.Visible = false E.HealthBarOutline.ZIndex = 2 E.HealthBarOutline.Transparency = 0.8
+
+    ESPObjects[Player] = E
+end
+
+local function removeESP(Player)
+    if ESPObjects[Player] then
+        for _, d in pairs(ESPObjects[Player]) do d:Remove() end
+        ESPObjects[Player] = nil
+    end
+end
+
+local function hideESP(ESP)
+    for _, k in pairs({"Box", "BoxOutline", "CornerTL", "CornerTR", "CornerBL", "CornerBR", "Tracer", "Name", "Distance", "Health", "HealthBar", "HealthBarOutline"}) do
+        ESP[k].Visible = false
+    end
+end
+
+local function updateESP()
+    for Player, ESP in pairs(ESPObjects) do
+        pcall(function()
+            if not Player or not Player.Character or Player == LocalPlayer then hideESP(ESP) return end
+            local Char = Player.Character
+            local Hum = Char:FindFirstChildOfClass("Humanoid")
+            local Root = Char:FindFirstChild("HumanoidRootPart")
+            local Head = Char:FindFirstChild("Head")
+
+            if not (Hum and Root and Head and Hum.Health > 0 and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")) then
+                hideESP(ESP) return
+            end
+
+            local Dist = (LocalPlayer.Character.HumanoidRootPart.Position - Root.Position).Magnitude
+            if Dist > 5000 then hideESP(ESP) return end
+
+            local Vec, OnScr = Camera:WorldToViewportPoint(Root.Position)
+            if not (OnScr and espEnabled) then hideESP(ESP) return end
+
+            local HeadPos = Camera:WorldToViewportPoint(Head.Position + Vector3.new(0, 0.5, 0))
+            local LegPos = Camera:WorldToViewportPoint(Root.Position - Vector3.new(0, 3, 0))
+            local H = math.abs(HeadPos.Y - LegPos.Y)
+            local W = H / 2
+
+            local IsTarget = (targetPlayer == Player)
+            local BoxColor = IsTarget and Color3.fromRGB(0, 255, 100) or Color3.fromRGB(255, 50, 50)
+            if IsTarget then
+                local pulse = math.abs(math.sin(tick() * 3)) * 0.3 + 0.7
+                BoxColor = Color3.fromRGB(0, 255 * pulse, 100)
+            end
+
+            ESP.Box.Size = Vector2.new(W, H)
+            ESP.Box.Position = Vector2.new(Vec.X - W / 2, Vec.Y - H / 2)
+            ESP.Box.Color = BoxColor
+            ESP.Box.Visible = true
+
+            ESP.BoxOutline.Size = Vector2.new(W, H)
+            ESP.BoxOutline.Position = Vector2.new(Vec.X - W / 2, Vec.Y - H / 2)
+            ESP.BoxOutline.Visible = true
+
+            local cLen = math.min(W, H) / 4
+
+            ESP.CornerTL.From = Vector2.new(Vec.X - W / 2, Vec.Y - H / 2)
+            ESP.CornerTL.To = Vector2.new(Vec.X - W / 2 + cLen, Vec.Y - H / 2)
+            ESP.CornerTL.Color = BoxColor ESP.CornerTL.Visible = true
+
+            ESP.CornerTR.From = Vector2.new(Vec.X + W / 2, Vec.Y - H / 2)
+            ESP.CornerTR.To = Vector2.new(Vec.X + W / 2 - cLen, Vec.Y - H / 2)
+            ESP.CornerTR.Color = BoxColor ESP.CornerTR.Visible = true
+
+            ESP.CornerBL.From = Vector2.new(Vec.X - W / 2, Vec.Y + H / 2)
+            ESP.CornerBL.To = Vector2.new(Vec.X - W / 2 + cLen, Vec.Y + H / 2)
+            ESP.CornerBL.Color = BoxColor ESP.CornerBL.Visible = true
+
+            ESP.CornerBR.From = Vector2.new(Vec.X + W / 2, Vec.Y + H / 2)
+            ESP.CornerBR.To = Vector2.new(Vec.X + W / 2 - cLen, Vec.Y + H / 2)
+            ESP.CornerBR.Color = BoxColor ESP.CornerBR.Visible = true
+
+            ESP.Tracer.Visible = false
+
+            ESP.Name.Text = Player.Name .. (IsTarget and " [LOCKED]" or "")
+            ESP.Name.Position = Vector2.new(Vec.X, HeadPos.Y - 25)
+            ESP.Name.Color = IsTarget and Color3.fromRGB(100, 255, 150) or Color3.fromRGB(255, 255, 255)
+            ESP.Name.Visible = true
+
+            local distColor = Dist < 100 and Color3.fromRGB(255, 100, 100) or Dist < 300 and Color3.fromRGB(255, 255, 100) or Color3.fromRGB(100, 200, 255)
+            ESP.Distance.Text = math.floor(Dist) .. "m"
+            ESP.Distance.Position = Vector2.new(Vec.X, LegPos.Y + 5)
+            ESP.Distance.Color = distColor
+            ESP.Distance.Visible = true
+
+            local HealthPct = math.floor((Hum.Health / Hum.MaxHealth) * 100)
+            ESP.Health.Text = HealthPct .. "HP"
+            ESP.Health.Position = Vector2.new(Vec.X, LegPos.Y + 20)
+            ESP.Health.Color = HealthPct > 75 and Color3.fromRGB(0, 255, 100) or HealthPct > 50 and Color3.fromRGB(255, 255, 0) or HealthPct > 25 and Color3.fromRGB(255, 150, 0) or Color3.fromRGB(255, 0, 0)
+            ESP.Health.Visible = true
+
+            local hBarH = H * (Hum.Health / Hum.MaxHealth)
+            local hBarX = Vec.X - W / 2 - 7
+            ESP.HealthBarOutline.From = Vector2.new(hBarX, Vec.Y - H / 2)
+            ESP.HealthBarOutline.To = Vector2.new(hBarX, Vec.Y + H / 2)
+            ESP.HealthBarOutline.Visible = true
+
+            ESP.HealthBar.From = Vector2.new(hBarX, Vec.Y + H / 2)
+            ESP.HealthBar.To = Vector2.new(hBarX, Vec.Y + H / 2 - hBarH)
+            ESP.HealthBar.Color = ESP.Health.Color
+            ESP.HealthBar.Visible = true
+        end)
+    end
+end
+
+-- ============================================
+-- X-RAY
+-- ============================================
+local function toggleXRay(enabled)
+    if enabled then
+        for _, obj in pairs(workspace:GetDescendants()) do
+            if obj:IsA("BasePart") and not obj:IsDescendantOf(LocalPlayer.Character) then
+                originalTransparencies[obj] = obj.Transparency
+                obj.Transparency = 0.7
+            end
+        end
+    else
+        for obj, t in pairs(originalTransparencies) do
+            if obj and obj.Parent then obj.Transparency = t end
+        end
+        originalTransparencies = {}
+    end
+end
+
+-- ============================================
+-- INFINITE JUMP
+-- ============================================
+local function toggleInfiniteJump(enabled)
+    if enabled then
+        infiniteJumpConnection = UserInputService.JumpRequest:Connect(function()
+            if LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
+                LocalPlayer.Character:FindFirstChildOfClass("Humanoid"):ChangeState(Enum.HumanoidStateType.Jumping)
+            end
+        end)
+    else
+        if infiniteJumpConnection then
+            infiniteJumpConnection:Disconnect()
+            infiniteJumpConnection = nil
+        end
+    end
+end
+
+-- ============================================
+-- GOD MODE
+-- ============================================
+local function cleanupGodmodeInternal()
+    isGodmode = false
+    if gmConnection then gmConnection:Disconnect() gmConnection = nil end
+    if noclipConn then noclipConn:Disconnect() noclipConn = nil end
+    if deathConn then deathConn:Disconnect() deathConn = nil end
+    local char = LocalPlayer.Character
+    if char then
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if root and ghostClone and ghostClone:FindFirstChild("HumanoidRootPart") then
+            pcall(function() root.CFrame = ghostClone.HumanoidRootPart.CFrame end)
+        end
+        if char:FindFirstChild("Humanoid") then
+            pcall(function()
+                char.Humanoid.PlatformStand = false
+                Camera.CameraSubject = char.Humanoid
+            end)
+        end
+    end
+    if ghostClone then pcall(function() ghostClone:Destroy() end) ghostClone = nil end
+end
+
+local function cleanupGodmode()
+    godmodeUserWants = false
+    cleanupGodmodeInternal()
+end
+
+local function enableGodmode()
+    if autoFarmEnabled then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    local root = char:WaitForChild("HumanoidRootPart", 5)
+    local humanoid = char:WaitForChild("Humanoid", 5)
+    if not root or not humanoid then return end
+
+    cleanupGodmodeInternal()
+    isGodmode = true
+    godmodeUserWants = true
+
+    char.Archivable = true
+    ghostClone = char:Clone()
+    ghostClone.Name = "GhostDecoy"
+    ghostClone.Parent = workspace
+    char.Archivable = false
+
+    for _, v in pairs(ghostClone:GetDescendants()) do
+        if v:IsA("BasePart") then
+            v.Transparency = (v.Name:lower():find("root") or v.Name:lower():find("collision")) and 0.5 or 0
+            v.CanCollide = true
+        elseif v:IsA("Decal") or v:IsA("Texture") then
+            v.Transparency = 0
+        end
+    end
+
+    if char:FindFirstChild("Animate") then
+        char.Animate:Clone().Parent = ghostClone
+    end
+
+    humanoid.PlatformStand = true
+    Camera.CameraSubject = ghostClone:FindFirstChildOfClass("Humanoid")
+
+    noclipConn = RunService.Stepped:Connect(function()
+        pcall(function()
+            if char then
+                for _, v in pairs(char:GetDescendants()) do
+                    if v:IsA("BasePart") then v.CanCollide = false end
+                end
+            end
+        end)
+    end)
+
+    gmConnection = RunService.Heartbeat:Connect(function()
+        pcall(function()
+            if ghostClone and ghostClone:FindFirstChild("HumanoidRootPart") and char and char:FindFirstChild("HumanoidRootPart") and char:FindFirstChild("Humanoid") then
+                local moveDir = char.Humanoid.MoveDirection
+                ghostClone.Humanoid:Move(moveDir, false)
+                ghostClone.Humanoid.Jump = char.Humanoid.Jump
+                if moveDir.Magnitude > 0 then
+                    local targetRot = CFrame.lookAt(ghostClone.HumanoidRootPart.Position, ghostClone.HumanoidRootPart.Position + moveDir)
+                    ghostClone.HumanoidRootPart.CFrame = ghostClone.HumanoidRootPart.CFrame:Lerp(targetRot, 0.25)
+                end
+                if tick() - lastPromptUpdate > 0.5 then
+                    for _, p in pairs(workspace:GetDescendants()) do
+                        if p:IsA("ProximityPrompt") then
+                            p.MaxActivationDistance = 25
+                            p.RequiresLineOfSight = false
+                        end
+                    end
+                    lastPromptUpdate = tick()
+                end
+                char.HumanoidRootPart.CFrame = ghostClone.HumanoidRootPart.CFrame * CFrame.new(0, -15, 0)
+                char.HumanoidRootPart.Velocity = Vector3.zero
+            else
+                cleanupGodmodeInternal()
+            end
+        end)
+    end)
+
+    deathConn = humanoid.Died:Connect(function()
+        cleanupGodmodeInternal()
+    end)
+end
+
+-- ============================================
+-- INSTANT INTERACT
+-- ============================================
+local function applyInstantPrompt(prompt)
+    if prompt:IsA("ProximityPrompt") then
+        prompt.HoldDuration = 0
+        prompt.MaxActivationDistance = math.max(prompt.MaxActivationDistance, 15)
+        prompt.RequiresLineOfSight = false
+    end
+end
+
+local function startInstantInteract()
+    for _, obj in pairs(workspace:GetDescendants()) do
+        if obj:IsA("ProximityPrompt") then applyInstantPrompt(obj) end
+    end
+    interactDescendantConn = workspace.DescendantAdded:Connect(function(obj)
+        if interactActive and obj:IsA("ProximityPrompt") then
+            task.wait()
+            applyInstantPrompt(obj)
+        end
+    end)
+    interactConnection = task.spawn(function()
+        while interactActive do
+            for _, obj in pairs(workspace:GetDescendants()) do
+                if obj:IsA("ProximityPrompt") then
+                    obj.HoldDuration = 0
+                    obj.RequiresLineOfSight = false
+                end
+            end
+            task.wait(0.3)
+        end
+    end)
+end
+
+local function stopInstantInteract()
+    if interactDescendantConn then
+        interactDescendantConn:Disconnect()
+        interactDescendantConn = nil
+    end
+    interactConnection = nil
+end
+
+-- ============================================
+-- AUTO HIT
+-- ============================================
+local function findAttackRemote()
+    local names = {
+        "Attack", "Hit", "Damage", "Combat", "Swing", "Punch", "Kick",
+        "attack", "hit", "damage", "combat", "swing", "punch", "kick",
+        "AttackEvent", "HitEvent", "DamageEvent", "CombatEvent",
+        "AttackRemote", "HitRemote", "DamageRemote", "CombatRemote",
+        "RE", "RemoteEvent", "Weapon", "weapon", "Fight", "fight",
+        "MeleeAttack", "meleeAttack", "PlayerAttack", "playerAttack"
+    }
+    for _, n in pairs(names) do
+        local r = ReplicatedStorage:FindFirstChild(n, true)
+        if r and (r:IsA("RemoteEvent") or r:IsA("RemoteFunction")) then return r end
+    end
+    local char = LocalPlayer.Character
+    if char then
+        for _, tool in pairs(char:GetChildren()) do
+            if tool:IsA("Tool") then
+                for _, child in pairs(tool:GetDescendants()) do
+                    if child:IsA("RemoteEvent") or child:IsA("RemoteFunction") then return child end
+                end
+            end
+        end
+    end
+    local backpack = LocalPlayer:FindFirstChild("Backpack")
+    if backpack then
+        for _, tool in pairs(backpack:GetChildren()) do
+            if tool:IsA("Tool") then
+                for _, child in pairs(tool:GetDescendants()) do
+                    if child:IsA("RemoteEvent") or child:IsA("RemoteFunction") then return child end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function getClosestPlayerInRange(range)
+    local cp, sd = nil, range
+    local char = LocalPlayer.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return nil end
+    local myPos = char.HumanoidRootPart.Position
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+            local hum = player.Character:FindFirstChild("Humanoid")
+            if hum and hum.Health > 0 then
+                local dist = (player.Character.HumanoidRootPart.Position - myPos).Magnitude
+                if dist < sd then cp = player sd = dist end
+            end
+        end
+    end
+    return cp
+end
+
+local function doAttack()
+    pcall(function()
+        local char = LocalPlayer.Character
+        if not char then return end
+        local hum = char:FindFirstChild("Humanoid")
+        if not hum or hum.Health <= 0 then return end
+
+        local tool = char:FindFirstChildOfClass("Tool")
+        if not tool then
+            pcall(function()
+                local bp = LocalPlayer:FindFirstChild("Backpack")
+                if bp then
+                    local bTool = bp:FindFirstChildOfClass("Tool")
+                    if bTool then
+                        hum:EquipTool(bTool)
+                        task.wait(0.1)
+                        tool = char:FindFirstChildOfClass("Tool")
+                    end
+                end
+            end)
+        end
+
+        local nearest = getClosestPlayerInRange(25)
+
+        if tool then pcall(function() tool:Activate() end) end
+
+        if not isMobile then
+            pcall(function()
+                local vim = game:GetService("VirtualInputManager")
+                if vim then
+                    vim:SendMouseButtonEvent(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2, 0, true, game, 1)
+                    task.wait(0.03)
+                    vim:SendMouseButtonEvent(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2, 0, false, game, 1)
+                end
+            end)
+        end
+
+        pcall(function()
+            local remote = findAttackRemote()
+            if remote then
+                if remote:IsA("RemoteEvent") then
+                    if nearest and nearest.Character then
+                        remote:FireServer(nearest.Character, nearest.Character:FindFirstChild("HumanoidRootPart"))
+                    else
+                        remote:FireServer()
+                    end
+                elseif remote:IsA("RemoteFunction") then
+                    if nearest and nearest.Character then
+                        remote:InvokeServer(nearest.Character, nearest.Character:FindFirstChild("HumanoidRootPart"))
+                    else
+                        remote:InvokeServer()
+                    end
+                end
+            end
+        end)
+
+        pcall(function()
+            local vu = game:GetService("VirtualUser")
+            if vu then
+                vu:ClickButton1(Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2))
+            end
+        end)
+    end)
+end
+
+local function startAutoHit()
+    if autoHitThread then
+        pcall(function() if type(autoHitThread) == "thread" then task.cancel(autoHitThread) end end)
+        autoHitThread = nil
+    end
+    autoHitThread = task.spawn(function()
+        while autoHitEnabled do
+            doAttack()
+            task.wait(attackSpeed)
+        end
+    end)
+end
+
+local function stopAutoHit()
+    autoHitEnabled = false
+    if autoHitThread then
+        pcall(function() if type(autoHitThread) == "thread" then task.cancel(autoHitThread) end end)
+        autoHitThread = nil
+    end
+end
+
+-- ============================================
+-- ANTI HIT (BARRIER)
+-- ============================================
+local function pushEnemiesAway()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChild("Humanoid")
+    if not root or not hum or hum.Health <= 0 then return end
+    local myPos = root.Position
+
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local eRoot = player.Character:FindFirstChild("HumanoidRootPart")
+            local eHum = player.Character:FindFirstChild("Humanoid")
+            if eRoot and eHum and eHum.Health > 0 then
+                local diff = eRoot.Position - myPos
+                local flat = Vector3.new(diff.X, 0, diff.Z)
+                local dist = flat.Magnitude
+
+                if dist < antiHitSafeDist then
+                    local pushDir = dist > 0.1 and flat.Unit or Vector3.new(math.cos(math.random() * 6.28), 0, math.sin(math.random() * 6.28))
+                    local edgePos = myPos + pushDir * (antiHitSafeDist + 3)
+                    local _, rotY, _ = eRoot.CFrame:ToEulerAnglesYXZ()
+
+                    eRoot.CFrame = CFrame.new(edgePos.X, eRoot.Position.Y, edgePos.Z) * CFrame.Angles(0, rotY, 0)
+                    eRoot.Velocity = Vector3.new(pushDir.X * 80, math.max(eRoot.Velocity.Y, 0), pushDir.Z * 80)
+
+                    pcall(function()
+                        eRoot.AssemblyLinearVelocity = Vector3.new(pushDir.X * 80, math.max(eRoot.AssemblyLinearVelocity.Y, 0), pushDir.Z * 80)
+                    end)
+
+                    pcall(function()
+                        local bv = eRoot:FindFirstChild("_XBarrier")
+                        if not bv then
+                            bv = Instance.new("BodyVelocity")
+                            bv.Name = "_XBarrier"
+                            bv.MaxForce = Vector3.new(1e6, 0, 1e6)
+                            bv.P = 1e5
+                            bv.Parent = eRoot
+                            antiHitBVs[eRoot] = bv
+                        end
+                        bv.Velocity = pushDir * 70
+                    end)
+
+                    pcall(function()
+                        local bp = eRoot:FindFirstChild("_XBarrierPos")
+                        if not bp then
+                            bp = Instance.new("BodyPosition")
+                            bp.Name = "_XBarrierPos"
+                            bp.MaxForce = Vector3.new(1e6, 0, 1e6)
+                            bp.P = 1e5
+                            bp.D = 1e3
+                            bp.Parent = eRoot
+                            antiHitBVs[tostring(eRoot) .. "_bp"] = bp
+                        end
+                        bp.Position = Vector3.new(edgePos.X, eRoot.Position.Y, edgePos.Z)
+                    end)
+                else
+                    pcall(function()
+                        local bv = eRoot:FindFirstChild("_XBarrier")
+                        if bv then bv:Destroy() end
+                        local bp = eRoot:FindFirstChild("_XBarrierPos")
+                        if bp then bp:Destroy() end
+                    end)
+                end
+            end
+        end
+    end
+end
+
+local function startAntiHit()
+    if antiHitConn1 then return end
+    antiHitConn1 = RunService.Stepped:Connect(function()
+        if antiHitEnabled then pcall(pushEnemiesAway) end
+    end)
+    antiHitConn2 = RunService.Heartbeat:Connect(function()
+        if antiHitEnabled then pcall(pushEnemiesAway) end
+    end)
+end
+
+local function stopAntiHit()
+    antiHitEnabled = false
+    if antiHitConn1 then antiHitConn1:Disconnect() antiHitConn1 = nil end
+    if antiHitConn2 then antiHitConn2:Disconnect() antiHitConn2 = nil end
+    for _, obj in pairs(antiHitBVs) do
+        pcall(function() if obj and obj.Parent then obj:Destroy() end end)
+    end
+    antiHitBVs = {}
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            local eRoot = p.Character:FindFirstChild("HumanoidRootPart")
+            if eRoot then
+                pcall(function()
+                    local bv = eRoot:FindFirstChild("_XBarrier") if bv then bv:Destroy() end
+                    local bp = eRoot:FindFirstChild("_XBarrierPos") if bp then bp:Destroy() end
+                end)
+            end
+        end
+    end
+end
+
+-- ============================================
+-- AUTO FARM: UNDERGROUND TELEPORT SYSTEM
+-- ============================================
+-- Flow:
+-- 1. Ghost clone stays at base (surface) - camera follows it
+-- 2. Real char goes underground (noclip) - tsunami safe
+-- 3. Scans workspace for brainrots matching selected categories
+-- 4. INSTANT TELEPORT underground to brainrot XZ
+-- 5. Surface briefly at brainrot Y to collect (touch + prompts)
+-- 6. Dive back underground immediately
+-- 7. INSTANT TELEPORT back to base underground
+-- 8. Repeat
+
+local function setFarmStatus(s)
+    farmStatus = s
+    pcall(function()
+        if farmStatusParagraph then
+            local catList = {}
+            for cat, _ in pairs(selectedFarmCategories) do table.insert(catList, cat) end
+            farmStatusParagraph:Set({
+                Title = "Status: " .. s,
+                Content = "Collected: " .. farmTotalCollected .. " | Categories: " .. (#catList > 0 and table.concat(catList, ", ") or "None")
+            })
+        end
+    end)
+end
+
+local function cleanFarmGhost()
+    if farmHeartbeatConn then farmHeartbeatConn:Disconnect() farmHeartbeatConn = nil end
+    if farmNoclipConn then farmNoclipConn:Disconnect() farmNoclipConn = nil end
+    if farmDeathConn then farmDeathConn:Disconnect() farmDeathConn = nil end
+    if farmGhostClone then pcall(function() farmGhostClone:Destroy() end) farmGhostClone = nil end
+    farmCollecting = false
+    pcall(function()
+        local char = LocalPlayer.Character
+        if char then
+            if char:FindFirstChild("Humanoid") then
+                char.Humanoid.PlatformStand = false
+                Camera.CameraSubject = char.Humanoid
+            end
+            for _, v in pairs(char:GetDescendants()) do
+                if v:IsA("BasePart") then v.CanCollide = true end
+            end
+        end
+    end)
+end
+
+local function setupFarmGhost()
+    cleanFarmGhost()
+    if godmodeUserWants then cleanupGodmode() end
+
+    local char = LocalPlayer.Character
+    if not char then return false end
+    local root = char:WaitForChild("HumanoidRootPart", 5)
+    local hum = char:WaitForChild("Humanoid", 5)
+    if not root or not hum then return false end
+
+    local startPos = root.CFrame
+
+    -- Create ghost clone on surface
+    char.Archivable = true
+    farmGhostClone = char:Clone()
+    farmGhostClone.Name = "FarmGhost"
+    farmGhostClone.Parent = workspace
+    char.Archivable = false
+
+    for _, v in pairs(farmGhostClone:GetDescendants()) do
+        if v:IsA("BasePart") then
+            v.Transparency = (v.Name:lower():find("root") or v.Name:lower():find("collision")) and 1 or 0
+            v.CanCollide = true
+        elseif v:IsA("Decal") or v:IsA("Texture") then
+            v.Transparency = 0
+        end
+    end
+
+    if char:FindFirstChild("Animate") then
+        char.Animate:Clone().Parent = farmGhostClone
+    end
+
+    -- Ghost stays at base position
+    local gRoot = farmGhostClone:FindFirstChild("HumanoidRootPart")
+    if gRoot then gRoot.CFrame = startPos end
+
+    -- Camera follows ghost, real char hidden underground
+    local gHum = farmGhostClone:FindFirstChildOfClass("Humanoid")
+    hum.PlatformStand = true
+    Camera.CameraSubject = gHum
+
+    -- Send real char underground
+    root.CFrame = CFrame.new(startPos.X, startPos.Y - undergroundDepth, startPos.Z)
+    root.Velocity = Vector3.zero
+
+    -- STEPPED: Noclip every frame BEFORE physics (tsunami protection)
+    farmNoclipConn = RunService.Stepped:Connect(function()
+        pcall(function()
+            local c = LocalPlayer.Character
+            if c then
+                for _, v in pairs(c:GetDescendants()) do
+                    if v:IsA("BasePart") then v.CanCollide = false end
+                end
+            end
+        end)
+    end)
+
+    -- HEARTBEAT: Keep real char underground + freeze velocity
+    farmHeartbeatConn = RunService.Heartbeat:Connect(function()
+        pcall(function()
+            local c = LocalPlayer.Character
+            if not c then return end
+            local r = c:FindFirstChild("HumanoidRootPart")
+            if not r then return end
+
+            -- Don't override during collection
+            if farmCollecting then return end
+
+            -- If char somehow surfaced, push back underground
+            if r.Position.Y > -undergroundDepth + 10 then
+                r.CFrame = CFrame.new(r.Position.X, r.Position.Y - undergroundDepth, r.Position.Z)
+            end
+
+            -- Freeze all velocity
+            r.Velocity = Vector3.zero
+            pcall(function() r.AssemblyLinearVelocity = Vector3.zero end)
+        end)
+    end)
+
+    -- Handle death
+    farmDeathConn = hum.Died:Connect(function()
+        cleanFarmGhost()
+    end)
+
+    return true
+end
+
+-- Brainrot category detection
+local function identifyBrainrotCategory(obj)
+    local nameL = obj.Name:lower()
+    local sorted = {}
+    for _, c in ipairs(allFarmCategories) do table.insert(sorted, c) end
+    table.sort(sorted, function(a, b) return #a > #b end)
+
+    -- Check object name
+    for _, cat in ipairs(sorted) do
+        if nameL:find(cat:lower()) then return cat end
+    end
+
+    -- Check children StringValue/IntValue
+    for _, child in pairs(obj:GetChildren()) do
+        if child:IsA("StringValue") or child:IsA("IntValue") then
+            local vL = tostring(child.Value):lower()
+            local cN = child.Name:lower()
+            for _, cat in ipairs(sorted) do
+                local cl = cat:lower()
+                if vL:find(cl) or cN:find(cl) then return cat end
+            end
+        end
+    end
+
+    -- Check BillboardGui text
+    for _, desc in pairs(obj:GetDescendants()) do
+        if desc:IsA("TextLabel") or desc:IsA("TextButton") then
+            local tL = desc.Text:lower()
+            for _, cat in ipairs(sorted) do
+                if tL:find(cat:lower()) then return cat end
+            end
+        end
+    end
+
+    -- Check attributes
+    pcall(function()
+        for _, attrName in pairs({"Rarity", "rarity", "Category", "Type", "Tier", "tier", "type", "category"}) do
+            local val = obj:GetAttribute(attrName)
+            if val then
+                local vL = tostring(val):lower()
+                for _, cat in ipairs(sorted) do
+                    if vL:find(cat:lower()) then return cat end
+                end
+            end
+        end
+    end)
+
+    -- Check parent name
+    if obj.Parent and obj.Parent ~= workspace then
+        local pL = obj.Parent.Name:lower()
+        for _, cat in ipairs(sorted) do
+            if pL:find(cat:lower()) then return cat end
+        end
+    end
+
+    -- Generic brainrot fallback
+    if nameL:find("brainrot") or nameL:find("brain_rot") then return "Common" end
+    return nil
+end
+
+local function getObjectPosition(obj)
+    if obj:IsA("Model") then
+        if obj.PrimaryPart then return obj.PrimaryPart.Position end
+        if obj:FindFirstChild("HumanoidRootPart") then return obj.HumanoidRootPart.Position end
+        if obj:FindFirstChild("Head") then return obj.Head.Position end
+        for _, p in pairs(obj:GetDescendants()) do
+            if p:IsA("BasePart") then return p.Position end
+        end
+    elseif obj:IsA("BasePart") then
+        return obj.Position
+    end
+    return nil
+end
+
+local function scanBrainrots()
+    local found = {}
+    for _, obj in pairs(workspace:GetDescendants()) do
+        if obj:IsA("Model") or obj:IsA("BasePart") then
+            local skip = false
+            if obj.Name == "GhostDecoy" or obj.Name == "FarmGhost" then skip = true end
+            if not skip then
+                for _, pl in pairs(Players:GetPlayers()) do
+                    if pl.Character and (obj == pl.Character or obj:IsDescendantOf(pl.Character)) then
+                        skip = true
+                        break
+                    end
+                end
+            end
+            if not skip then
+                local cat = identifyBrainrotCategory(obj)
+                if cat and selectedFarmCategories[cat] then
+                    local pos = getObjectPosition(obj)
+                    if pos then
+                        table.insert(found, {
+                            obj = obj,
+                            pos = pos,
+                            cat = cat,
+                            priority = categoryPriority[cat] or 10
+                        })
+                    end
+                end
+            end
+        end
+    end
+    table.sort(found, function(a, b)
+        if a.priority ~= b.priority then return a.priority < b.priority end
+        return true
+    end)
+    return found
+end
+
+local function teleportUnderground(pos)
+    local char = LocalPlayer.Character
+    if not char then return end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    root.CFrame = CFrame.new(pos.X, pos.Y - undergroundDepth, pos.Z)
+    root.Velocity = Vector3.zero
+    pcall(function() root.AssemblyLinearVelocity = Vector3.zero end)
+end
+
+local function collectBrainrot(target)
+    if not target.obj or not target.obj.Parent then return false end
+    local char = LocalPlayer.Character
+    if not char then return false end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return false end
+
+    -- Step 1: Pause heartbeat override
+    farmCollecting = true
+
+    -- Step 2: Teleport underground to brainrot XZ
+    root.CFrame = CFrame.new(target.pos.X, target.pos.Y - undergroundDepth, target.pos.Z)
+    root.Velocity = Vector3.zero
+    task.wait(0.1)
+
+    -- Step 3: Surface at brainrot position (brief exposure)
+    root.CFrame = CFrame.new(target.pos)
+    root.Velocity = Vector3.zero
+    task.wait(0.1)
+
+    -- Step 4: firetouchinterest
+    pcall(function()
+        if typeof(firetouchinterest) == "function" then
+            if target.obj:IsA("BasePart") then
+                firetouchinterest(root, target.obj, 0)
+                task.wait(0.03)
+                firetouchinterest(root, target.obj, 1)
+            end
+            for _, part in pairs(target.obj:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    firetouchinterest(root, part, 0)
+                    task.wait(0.02)
+                    firetouchinterest(root, part, 1)
+                end
+            end
+        end
+    end)
+
+    -- Step 5: ProximityPrompts
+    pcall(function()
+        for _, desc in pairs(target.obj:GetDescendants()) do
+            if desc:IsA("ProximityPrompt") then
+                desc.HoldDuration = 0
+                desc.RequiresLineOfSight = false
+                desc.MaxActivationDistance = 200
+                pcall(function() fireproximityprompt(desc) end)
+            end
+        end
+    end)
+
+    -- Step 6: ClickDetectors
+    pcall(function()
+        for _, desc in pairs(target.obj:GetDescendants()) do
+            if desc:IsA("ClickDetector") then
+                pcall(function() fireclickdetector(desc) end)
+            end
+        end
+    end)
+
+    -- Step 7: Nearby prompts in radius
+    pcall(function()
+        for _, obj in pairs(workspace:GetDescendants()) do
+            if obj:IsA("ProximityPrompt") then
+                local promptPart = obj.Parent
+                if promptPart and promptPart:IsA("BasePart") and (promptPart.Position - target.pos).Magnitude < 20 then
+                    obj.HoldDuration = 0
+                    obj.RequiresLineOfSight = false
+                    pcall(function() fireproximityprompt(obj) end)
+                end
+            end
+        end
+    end)
+
+    -- Step 8: Second touch attempt
+    pcall(function()
+        if typeof(firetouchinterest) == "function" then
+            root.CFrame = CFrame.new(target.pos)
+            task.wait(0.05)
+            if target.obj and target.obj.Parent then
+                if target.obj:IsA("BasePart") then
+                    firetouchinterest(root, target.obj, 0)
+                    task.wait(0.03)
+                    firetouchinterest(root, target.obj, 1)
+                end
+                for _, part in pairs(target.obj:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        firetouchinterest(root, part, 0)
+                        task.wait(0.02)
+                        firetouchinterest(root, part, 1)
+                    end
+                end
+            end
+        end
+    end)
+
+    task.wait(0.15)
+
+    -- Step 9: Dive back underground immediately
+    root.CFrame = CFrame.new(target.pos.X, target.pos.Y - undergroundDepth, target.pos.Z)
+    root.Velocity = Vector3.zero
+
+    -- Resume heartbeat override
+    farmCollecting = false
+    return true
+end
+
+local function getSafeZone()
+    if safeZonePosition then return safeZonePosition end
+    local spawn = workspace:FindFirstChildOfClass("SpawnLocation")
+    if spawn then return spawn.Position + Vector3.new(0, 3, 0) end
+    return Vector3.new(0, 50, 0)
+end
+
+local function stopAutoFarm()
+    autoFarmEnabled = false
+    setFarmStatus("Idle")
+    if farmThread then
+        pcall(function() if type(farmThread) == "thread" then task.cancel(farmThread) end end)
+        farmThread = nil
+    end
+    cleanFarmGhost()
+end
+
+local function farmMainLoop()
+    setFarmStatus("Setting up...")
+
+    if not setupFarmGhost() then
+        setFarmStatus("Setup failed!")
+        task.wait(2)
+        stopAutoFarm()
+        return
+    end
+
+    -- Move ghost to base
+    pcall(function()
+        local sz = getSafeZone()
+        if farmGhostClone and farmGhostClone:FindFirstChild("HumanoidRootPart") then
+            farmGhostClone.HumanoidRootPart.CFrame = CFrame.new(sz)
+        end
+    end)
+
+    -- Real char underground at base
+    teleportUnderground(getSafeZone())
+    task.wait(0.5)
+
+    setFarmStatus("Farming...")
+
+    while autoFarmEnabled do
+        local ok, err = pcall(function()
+            -- Check alive
+            local char = LocalPlayer.Character
+            if not char or not char:FindFirstChild("Humanoid") or char.Humanoid.Health <= 0 then
+                setFarmStatus("Dead, waiting...")
+                task.wait(2)
+                return
+            end
+
+            -- Check ghost
+            if not farmGhostClone or not farmGhostClone:FindFirstChild("HumanoidRootPart") then
+                setFarmStatus("Rebuilding...")
+                setupFarmGhost()
+                teleportUnderground(getSafeZone())
+                task.wait(1)
+                return
+            end
+
+            -- Check categories
+            local hasCat = false
+            for _ in pairs(selectedFarmCategories) do hasCat = true break end
+            if not hasCat then
+                setFarmStatus("Select categories!")
+                task.wait(1)
+                return
+            end
+
+            -- ===== SCAN =====
+            setFarmStatus("Scanning...")
+            local brainrots = scanBrainrots()
+
+            if #brainrots == 0 then
+                setFarmStatus("Waiting for spawn...")
+                teleportUnderground(getSafeZone())
+                task.wait(farmScanInterval)
+                return
+            end
+
+            -- ===== FOUND =====
+            local target = brainrots[1]
+            setFarmStatus("Found " .. target.cat .. "!")
+
+            Luna:Notification({
+                Title = "Brainrot Detected!",
+                Content = target.cat .. " spawned!",
+                Icon = "notifications",
+                ImageSource = "Material"
+            })
+
+            -- ===== INSTANT TELEPORT + COLLECT =====
+            setFarmStatus("Collecting " .. target.cat)
+            collectBrainrot(target)
+            farmTotalCollected = farmTotalCollected + 1
+
+            Luna:Notification({
+                Title = "Collected!",
+                Content = target.cat .. " #" .. farmTotalCollected,
+                Icon = "check_circle",
+                ImageSource = "Material"
+            })
+
+            -- ===== INSTANT TELEPORT BACK TO BASE =====
+            setFarmStatus("Back to base")
+            teleportUnderground(getSafeZone())
+
+            -- Keep ghost at base
+            pcall(function()
+                local sz = getSafeZone()
+                if farmGhostClone and farmGhostClone:FindFirstChild("HumanoidRootPart") then
+                    farmGhostClone.HumanoidRootPart.CFrame = CFrame.new(sz)
+                end
+            end)
+
+            setFarmStatus("Farming...")
+            task.wait(0.3)
+        end)
+
+        if not ok then
+            setFarmStatus("Error! Fixing...")
+            if autoFarmEnabled then
+                pcall(function()
+                    setupFarmGhost()
+                    teleportUnderground(getSafeZone())
+                end)
+            end
+            task.wait(2)
+        end
+
+        task.wait(farmScanInterval)
+    end
+
+    setFarmStatus("Idle")
+end
+
+local function startAutoFarm()
+    if farmThread then
+        pcall(function() if type(farmThread) == "thread" then task.cancel(farmThread) end end)
+        farmThread = nil
+    end
+    if godmodeUserWants then cleanupGodmode() end
+    farmThread = task.spawn(farmMainLoop)
+end
+
+-- ============================================
+-- RESPAWN HANDLER
+-- ============================================
+LocalPlayer.CharacterAdded:Connect(function(char)
+    char:WaitForChild("HumanoidRootPart", 10)
+    char:WaitForChild("Humanoid", 10)
+    task.wait(1)
+
+    if autoFarmEnabled then
+        task.wait(0.5)
+        if autoFarmEnabled then
+            cleanFarmGhost()
+            task.wait(0.5)
+            setupFarmGhost()
+            teleportUnderground(getSafeZone())
+        end
+    elseif godmodeUserWants then
+        enableGodmode()
+    end
+
+    if autoHitEnabled then
+        task.wait(0.3)
+        if autoHitEnabled then startAutoHit() end
+    end
+end)
+
+-- ============================================
+-- UI CREATION
+-- ============================================
+Window:CreateHomeTab({
+    SupportedExecutors = {"Synapse X", "Krnl", "Fluxus", "Script-Ware", "Electron", "Solara", "Wave", "Delta", "Xeno"},
+    DiscordInvite = nil,
+    Icon = 1
+})
+
+local CombatTab = Window:CreateTab({Name = "Combat", Icon = "gps_fixed", ImageSource = "Material", ShowTitle = true})
+local VisualsTab = Window:CreateTab({Name = "Visuals", Icon = "visibility", ImageSource = "Material", ShowTitle = true})
+local MiscTab = Window:CreateTab({Name = "Misc", Icon = "more_horiz", ImageSource = "Material", ShowTitle = true})
+local FarmTab = Window:CreateTab({Name = "Farm", Icon = "eco", ImageSource = "Material", ShowTitle = true})
+local SettingsTab = Window:CreateTab({Name = "Settings", Icon = "settings", ImageSource = "Material", ShowTitle = true})
+
+-- ============================================
+-- COMBAT TAB
+-- ============================================
+CombatTab:CreateSection("Aimlock")
+
+CombatTab:CreateToggle({
+    Name = "Enable Aimlock",
+    CurrentValue = false,
+    Flag = "AimlockToggle",
+    Callback = function(V)
+        aimlockEnabled = V
+        createFOVCircle()
+    end
+})
+
+CombatTab:CreateToggle({
+    Name = "Smooth Aim",
+    CurrentValue = false,
+    Flag = "SmoothAimToggle",
+    Callback = function(V) smoothAim = V end
+})
+
+CombatTab:CreateSlider({
+    Name = "Smoothness",
+    Range = {0.1, 1},
+    Increment = 0.05,
+    CurrentValue = 0.4,
+    Flag = "SmoothnessSlider",
+    Callback = function(V) smoothness = V end
+})
+
+CombatTab:CreateToggle({
+    Name = "Wall Check",
+    CurrentValue = true,
+    Flag = "WallCheckToggle",
+    Callback = function(V) wallCheck = V end
+})
+
+CombatTab:CreateDropdown({
+    Name = "Target Body Part",
+    Options = {"Head", "UpperTorso", "LowerTorso", "HumanoidRootPart"},
+    CurrentOption = {"Head"},
+    MultipleOptions = false,
+    Flag = "AimPartDropdown",
+    Callback = function(O)
+        aimPart = type(O) == "table" and O[1] or O
+    end
+})
+
+CombatTab:CreateSection("FOV Circle")
+
+CombatTab:CreateToggle({
+    Name = "Enable FOV",
+    CurrentValue = false,
+    Flag = "FOVToggle",
+    Callback = function(V)
+        fovEnabled = V
+        createFOVCircle()
+    end
+})
+
+CombatTab:CreateSlider({
+    Name = "FOV Size",
+    Range = {50, 500},
+    Increment = 10,
+    CurrentValue = 100,
+    Flag = "FOVSlider",
+    Callback = function(V)
+        fovSize = V
+        if fovCircle then fovCircle.Radius = V end
+    end
+})
+
+CombatTab:CreateColorPicker({
+    Name = "FOV Color",
+    Color = Color3.fromRGB(255, 255, 255),
+    Flag = "FOVColor",
+    Callback = function(V)
+        if fovCircle then fovCircle.Color = V end
+    end
+})
+
+CombatTab:CreateSection("Aimbot (Silent)")
+
+CombatTab:CreateToggle({
+    Name = "Enable Aimbot",
+    CurrentValue = false,
+    Flag = "AimbotToggle",
+    Callback = function(V) aimbotEnabled = V end
+})
+
+-- ============================================
+-- VISUALS TAB
+-- ============================================
+VisualsTab:CreateSection("ESP")
+
+VisualsTab:CreateToggle({
+    Name = "Enable ESP",
+    CurrentValue = false,
+    Flag = "ESPToggle",
+    Callback = function(V)
+        espEnabled = V
+        if V then
+            for _, player in pairs(Players:GetPlayers()) do
+                if player ~= LocalPlayer then createESP(player) end
+            end
+            RunService:BindToRenderStep("UpdateESP", Enum.RenderPriority.Camera.Value + 1, updateESP)
+        else
+            RunService:UnbindFromRenderStep("UpdateESP")
+            for player, _ in pairs(ESPObjects) do removeESP(player) end
+        end
+    end
+})
+
+VisualsTab:CreateColorPicker({
+    Name = "ESP Color",
+    Color = Color3.fromRGB(255, 0, 0),
+    Flag = "ESPColor",
+    Callback = function(V)
+        for _, ESP in pairs(ESPObjects) do
+            ESP.Box.Color = V
+            ESP.Tracer.Color = V
+        end
+    end
+})
+
+VisualsTab:CreateSection("X-Ray")
+
+VisualsTab:CreateToggle({
+    Name = "Enable X-Ray",
+    CurrentValue = false,
+    Flag = "XRayToggle",
+    Callback = function(V)
+        xrayEnabled = V
+        toggleXRay(V)
+    end
+})
+
+VisualsTab:CreateSlider({
+    Name = "X-Ray Transparency",
+    Range = {0, 1},
+    Increment = 0.1,
+    CurrentValue = 0.7,
+    Flag = "XRayTransparency",
+    Callback = function(V)
+        if xrayEnabled then
+            for obj, _ in pairs(originalTransparencies) do
+                if obj and obj.Parent then obj.Transparency = V end
+            end
+        end
+    end
+})
+
+-- ============================================
+-- MISC TAB
+-- ============================================
+MiscTab:CreateSection("Movement")
+
+MiscTab:CreateToggle({
+    Name = "Infinite Jump",
+    CurrentValue = false,
+    Flag = "InfiniteJump",
+    Callback = function(V)
+        infiniteJumpEnabled = V
+        toggleInfiniteJump(V)
+    end
+})
+
+MiscTab:CreateSection("Survival")
+
+MiscTab:CreateToggle({
+    Name = "God Mode",
+    CurrentValue = false,
+    Flag = "GodMode",
+    Callback = function(V)
+        if V then enableGodmode() else cleanupGodmode() end
+    end
+})
+
+MiscTab:CreateSection("Interactions")
+
+MiscTab:CreateToggle({
+    Name = "Instant Interact",
+    CurrentValue = false,
+    Flag = "InstantInteract",
+    Callback = function(V)
+        interactActive = V
+        if V then startInstantInteract() else stopInstantInteract() end
+    end
+})
+
+MiscTab:CreateSection("Combat")
+
+MiscTab:CreateToggle({
+    Name = "Auto Hit",
+    CurrentValue = false,
+    Flag = "AutoHit",
+    Callback = function(V)
+        autoHitEnabled = V
+        if V then startAutoHit() else stopAutoHit() end
+    end
+})
+
+MiscTab:CreateSlider({
+    Name = "Attack Speed",
+    Range = {0.05, 2},
+    Increment = 0.05,
+    CurrentValue = 0.3,
+    Flag = "AttackSpeed",
+    Callback = function(V) attackSpeed = V end
+})
+
+MiscTab:CreateToggle({
+    Name = "Anti Hit (Barrier)",
+    CurrentValue = false,
+    Flag = "AntiHit",
+    Callback = function(V)
+        antiHitEnabled = V
+        if V then startAntiHit() else stopAntiHit() end
+    end
+})
+
+MiscTab:CreateSlider({
+    Name = "Barrier Distance",
+    Range = {5, 30},
+    Increment = 1,
+    CurrentValue = 14,
+    Flag = "AntiHitDist",
+    Callback = function(V) antiHitSafeDist = V end
+})
+
+-- ============================================
+-- FARM TAB
+-- ============================================
+FarmTab:CreateSection("Auto Farm Brainrot")
+
+FarmTab:CreateParagraph({
+    Title = "Underground Teleport Farm",
+    Content = "1. Character goes UNDERGROUND (noclip)\n2. Safe from tsunami waves\n3. Scans for brainrots continuously\n4. INSTANT TELEPORT to brainrot\n5. Surfaces briefly to collect\n6. Dives back underground\n7. INSTANT TELEPORT back to base\n8. Repeats forever\n\nNo walking. Pure teleportation."
+})
+
+farmStatusParagraph = FarmTab:CreateParagraph({
+    Title = "Status: Idle",
+    Content = "Collected: 0 | Categories: None"
+})
+
+FarmTab:CreateToggle({
+    Name = "Enable Auto Farm",
+    CurrentValue = false,
+    Flag = "AutoFarm",
+    Callback = function(V)
+        autoFarmEnabled = V
+        if V then
+            if not safeZonePosition then
+                pcall(function()
+                    local char = LocalPlayer.Character
+                    if char and char:FindFirstChild("HumanoidRootPart") then
+                        safeZonePosition = char.HumanoidRootPart.Position
+                    end
+                end)
+            end
+            startAutoFarm()
+            Luna:Notification({
+                Title = "Farm",
+                Content = "Underground farm started!\nTsunami safe + instant teleport",
+                Icon = "play_arrow",
+                ImageSource = "Material"
+            })
+        else
+            stopAutoFarm()
+            Luna:Notification({
+                Title = "Farm",
+                Content = "Farm stopped. Total: " .. farmTotalCollected,
+                Icon = "stop",
+                ImageSource = "Material"
+            })
+        end
+    end
+})
+
+FarmTab:CreateDropdown({
+    Name = "Brainrot Categories (max 6)",
+    Options = allFarmCategories,
+    CurrentOption = {},
+    MultipleOptions = true,
+    Flag = "FarmCategories",
+    Callback = function(Options)
+        selectedFarmCategories = {}
+        if type(Options) == "table" then
+            local count = 0
+            for _, opt in ipairs(Options) do
+                if count < 6 then
+                    selectedFarmCategories[opt] = true
+                    count = count + 1
+                end
+            end
+            if #Options > 6 then
+                Luna:Notification({
+                    Title = "Farm",
+                    Content = "Max 6! Only first 6 used.",
+                    Icon = "warning",
+                    ImageSource = "Material"
+                })
+            end
+        end
+        setFarmStatus(farmStatus)
+    end
+})
+
+FarmTab:CreateSection("Settings")
+
+FarmTab:CreateSlider({
+    Name = "Underground Depth",
+    Range = {10, 50},
+    Increment = 1,
+    CurrentValue = 20,
+    Flag = "UndergroundDepth",
+    Callback = function(V) undergroundDepth = V end
+})
+
+FarmTab:CreateSlider({
+    Name = "Scan Interval (seconds)",
+    Range = {0.1, 3},
+    Increment = 0.1,
+    CurrentValue = 0.5,
+    Flag = "ScanInterval",
+    Callback = function(V) farmScanInterval = V end
+})
+
+FarmTab:CreateSection("Base (Safe Zone)")
+
+FarmTab:CreateButton({
+    Name = "Set Base (Current Position)",
+    Callback = function()
+        pcall(function()
+            local pos
+            if farmGhostClone and farmGhostClone:FindFirstChild("HumanoidRootPart") then
+                pos = farmGhostClone.HumanoidRootPart.Position
+            elseif LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                pos = LocalPlayer.Character.HumanoidRootPart.Position
+            end
+            if pos then
+                safeZonePosition = pos
+                Luna:Notification({
+                    Title = "Farm",
+                    Content = "Base: X:" .. math.floor(pos.X) .. " Z:" .. math.floor(pos.Z),
+                    Icon = "place",
+                    ImageSource = "Material"
+                })
+            end
+        end)
+    end
+})
+
+FarmTab:CreateButton({
+    Name = "Teleport to Base",
+    Callback = function()
+        pcall(function()
+            local sz = getSafeZone()
+            if farmGhostClone and farmGhostClone:FindFirstChild("HumanoidRootPart") then
+                farmGhostClone.HumanoidRootPart.CFrame = CFrame.new(sz)
+            end
+            local char = LocalPlayer.Character
+            if char and char:FindFirstChild("HumanoidRootPart") then
+                char.HumanoidRootPart.CFrame = CFrame.new(sz.X, sz.Y - undergroundDepth, sz.Z)
+            end
+        end)
+    end
+})
+
+FarmTab:CreateButton({
+    Name = "Reset Counter",
+    Callback = function()
+        farmTotalCollected = 0
+        setFarmStatus(farmStatus)
+        Luna:Notification({
+            Title = "Farm",
+            Content = "Counter reset!",
+            Icon = "refresh",
+            ImageSource = "Material"
+        })
+    end
+})
+
+FarmTab:CreateSection("Priority")
+
+FarmTab:CreateParagraph({
+    Title = "Collection Priority",
+    Content = "1. Infinity (instant grab)\n2. Divino (instant grab)\n3. Celestial (instant grab)\n4. Mythic\n5. Legendary\n6. Epic\n7. Rare\n8. Uncommon\n9. Common\n\nHigher priority = grabbed first"
+})
+
+-- ============================================
+-- SETTINGS TAB
+-- ============================================
+SettingsTab:CreateSection("Info")
+
+SettingsTab:CreateParagraph({
+    Title = "Xenure Hub | Flick",
+    Content = "Android and Desktop compatible.\n\nFeatures:\n- Aimlock + Silent Aimbot + FOV\n- ESP + X-Ray\n- God Mode (ghost clone)\n- Infinite Jump\n- Instant Interact\n- Auto Hit (never stops)\n- Anti Hit (barrier)\n- Auto Farm (underground teleport)\n  > Tsunami safe\n  > Instant teleport\n  > Auto collect + return\n\nby Xenure"
+})
+
+SettingsTab:CreateSection("Controls")
+
+SettingsTab:CreateKeybind({
+    Name = "Toggle UI",
+    CurrentKeybind = "RightShift",
+    HoldToInteract = false,
+    Flag = "UIKeybind",
+    Callback = function() end
+})
+
+SettingsTab:CreateButton({
+    Name = "Destroy GUI",
+    Callback = function()
+        cleanupGodmode()
+        stopInstantInteract()
+        stopAutoHit()
+        stopAntiHit()
+        stopAutoFarm()
+        Luna:Destroy()
+    end
+})
+
+-- ============================================
+-- MAIN LOOP
+-- ============================================
+RunService.RenderStepped:Connect(function()
+    updateFOVCircle()
+    aimlock()
+    aimbot()
+end)
+
+-- ============================================
+-- PLAYER EVENTS
+-- ============================================
+Players.PlayerAdded:Connect(function(player)
+    if espEnabled and player ~= LocalPlayer then
+        createESP(player)
+    end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    removeESP(player)
+    pcall(function()
+        if player.Character then
+            local eRoot = player.Character:FindFirstChild("HumanoidRootPart")
+            if eRoot then
+                local bv = eRoot:FindFirstChild("_XBarrier")
+                if bv then bv:Destroy() end
+                local bp = eRoot:FindFirstChild("_XBarrierPos")
+                if bp then bp:Destroy() end
+            end
+        end
+    end)
+end)
+
+-- ============================================
+-- STARTUP NOTIFICATION
+-- ============================================
+Luna:Notification({
+    Title = "Xenure Hub Loaded",
+    Content = "Platform: " .. (isMobile and "Mobile" or "Desktop"),
+    Icon = "check_circle",
+    ImageSource = "Material"
+})
