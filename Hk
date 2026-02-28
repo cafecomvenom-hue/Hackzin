@@ -1,0 +1,1440 @@
+--[[
+	WARNING: Heads up! This script has not been verified by ScriptBlox. Use at your own risk!
+]]
+-- Xenure Hub | Flick
+-- Clean FPS script with Luna UI
+
+local Luna = loadstring(game:HttpGet("https://raw.githubusercontent.com/Nebula-Softworks/Luna-Interface-Suite/main/source.lua"))()
+
+local Window = Luna:CreateWindow({
+    Name = "Xenure Hub | Flick",
+    LoadingTitle = "Xenure Hub",
+    LoadingSubtitle = "by Xenure",
+    ConfigurationSaving = {
+        Enabled = true,
+        FolderName = "XenureHub",
+        FileName = "FlickConfig"
+    },
+    Discord = {
+        Enabled = false,
+        Invite = "",
+        RememberJoins = false
+    },
+    KeySystem = false
+})
+
+-- Services
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Camera = workspace.CurrentCamera
+local LocalPlayer = Players.LocalPlayer
+
+-- Platform Detection
+local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+
+-- Variables
+local aimlockEnabled = false
+local aimbotEnabled = false
+local smoothAim = false
+local aimPart = "Head"
+local fovEnabled = false
+local fovSize = 100
+local fovCircle = nil
+local smoothness = 0.4
+local wallCheck = true
+local targetPlayer = nil
+
+local espEnabled = false
+local espBoxes = {}
+local espNames = {}
+local espHealth = {}
+local espDistance = {}
+local ESPObjects = {}
+
+local xrayEnabled = false
+local originalTransparencies = {}
+
+local infiniteJumpEnabled = false
+local infiniteJumpConnection = nil
+
+-- God Mode Variables
+local isGodmode = false
+local godmodeUserWants = false
+local ghostClone, gmConnection, noclipConn, deathConn = nil, nil, nil, nil
+local lastPromptUpdate = 0
+
+-- Instant Interact Variables
+local interactActive = false
+local interactConnection = nil
+local interactDescendantConn = nil
+
+-- Auto Hit Variables
+local autoHitEnabled = false
+local autoHitConnection = nil
+local attackSpeed = 0.3
+local autoHitCharConn = nil
+
+-- Anti Hit Variables
+local antiHitEnabled = false
+local antiHitConnection = nil
+local antiHitSafeDist = 14
+
+-- Create FOV Circle
+local function createFOVCircle()
+    if fovCircle then fovCircle:Remove() end
+    fovCircle = Drawing.new("Circle")
+    fovCircle.Thickness = 2
+    fovCircle.NumSides = 50
+    fovCircle.Radius = fovSize
+    fovCircle.Filled = false
+    fovCircle.Transparency = 1
+    fovCircle.Color = Color3.fromRGB(255, 255, 255)
+    fovCircle.Visible = false
+    fovCircle.ZIndex = 2
+end
+
+-- Update FOV Circle
+local function updateFOVCircle()
+    if fovCircle then
+        local centerX = Camera.ViewportSize.X / 2
+        local centerY = Camera.ViewportSize.Y / 2
+        fovCircle.Position = Vector2.new(centerX, centerY)
+        fovCircle.Radius = fovSize
+        fovCircle.Visible = fovEnabled and (aimlockEnabled or aimbotEnabled)
+    end
+end
+
+-- Get Closest Player to Crosshair
+local function getClosestPlayerToCursor()
+    local closestPlayer = nil
+    local shortestDistance = fovEnabled and fovSize or math.huge
+    local mousePos = UserInputService:GetMouseLocation()
+    
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+            local humanoid = player.Character:FindFirstChild("Humanoid")
+            if humanoid and humanoid.Health > 0 then
+                local targetPart = player.Character:FindFirstChild(aimPart)
+                if targetPart then
+                    local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+                    
+                    if onScreen then
+                        local distance = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+                        
+                        if wallCheck then
+                            local ray = Ray.new(Camera.CFrame.Position, (targetPart.Position - Camera.CFrame.Position).Unit * 1000)
+                            local hit, position = workspace:FindPartOnRayWithIgnoreList(ray, {LocalPlayer.Character})
+                            
+                            if hit and hit:IsDescendantOf(player.Character) then
+                                if distance < shortestDistance then
+                                    closestPlayer = player
+                                    shortestDistance = distance
+                                end
+                            end
+                        else
+                            if distance < shortestDistance then
+                                closestPlayer = player
+                                shortestDistance = distance
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    return closestPlayer
+end
+
+-- Aimlock Function
+local function aimlock()
+    if not aimlockEnabled then return end
+    
+    local target = getClosestPlayerToCursor()
+    if target and target.Character then
+        local targetPart = target.Character:FindFirstChild(aimPart)
+        if targetPart then
+            local aimPosition = targetPart.Position
+            local cameraPosition = Camera.CFrame.Position
+            local direction = (aimPosition - cameraPosition).Unit
+            
+            if smoothAim then
+                local targetCFrame = CFrame.new(cameraPosition, cameraPosition + direction)
+                Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, smoothness)
+            else
+                Camera.CFrame = CFrame.new(cameraPosition, cameraPosition + direction)
+            end
+        end
+    end
+end
+
+-- Aimbot Function (Silent Aim)
+local function aimbot()
+    if not aimbotEnabled then return end
+    
+    local target = getClosestPlayerToCursor()
+    if target then
+        targetPlayer = target
+    else
+        targetPlayer = nil
+    end
+end
+
+-- ESP Functions
+ESPObjects = {}
+
+local function createESP(Player)
+    if ESPObjects[Player] or Player == LocalPlayer then return end
+    
+    local ESPHolder = {
+        Box = Drawing.new("Square"),
+        BoxOutline = Drawing.new("Square"),
+        CornerTL = Drawing.new("Line"),
+        CornerTR = Drawing.new("Line"),
+        CornerBL = Drawing.new("Line"),
+        CornerBR = Drawing.new("Line"),
+        Tracer = Drawing.new("Line"),
+        Name = Drawing.new("Text"),
+        Distance = Drawing.new("Text"),
+        Health = Drawing.new("Text"),
+        HealthBar = Drawing.new("Line"),
+        HealthBarOutline = Drawing.new("Line")
+    }
+    
+    ESPHolder.Box.Thickness = 2
+    ESPHolder.Box.Filled = false
+    ESPHolder.Box.Color = Color3.fromRGB(255, 0, 0)
+    ESPHolder.Box.Visible = false
+    ESPHolder.Box.ZIndex = 2
+    ESPHolder.Box.Transparency = 1
+    
+    ESPHolder.BoxOutline.Thickness = 4
+    ESPHolder.BoxOutline.Filled = false
+    ESPHolder.BoxOutline.Color = Color3.fromRGB(0, 0, 0)
+    ESPHolder.BoxOutline.Visible = false
+    ESPHolder.BoxOutline.ZIndex = 1
+    ESPHolder.BoxOutline.Transparency = 0.8
+    
+    for _, corner in pairs({ESPHolder.CornerTL, ESPHolder.CornerTR, ESPHolder.CornerBL, ESPHolder.CornerBR}) do
+        corner.Thickness = 3
+        corner.Color = Color3.fromRGB(255, 255, 255)
+        corner.Visible = false
+        corner.ZIndex = 3
+        corner.Transparency = 1
+    end
+    
+    ESPHolder.Tracer.Thickness = 2
+    ESPHolder.Tracer.Color = Color3.fromRGB(255, 0, 0)
+    ESPHolder.Tracer.Visible = false
+    ESPHolder.Tracer.ZIndex = 1
+    ESPHolder.Tracer.Transparency = 0.5
+    
+    ESPHolder.Name.Size = 16
+    ESPHolder.Name.Center = true
+    ESPHolder.Name.Outline = true
+    ESPHolder.Name.Font = 3
+    ESPHolder.Name.Color = Color3.fromRGB(255, 255, 255)
+    ESPHolder.Name.Visible = false
+    ESPHolder.Name.ZIndex = 3
+    ESPHolder.Name.Transparency = 1
+    
+    ESPHolder.Distance.Size = 13
+    ESPHolder.Distance.Center = true
+    ESPHolder.Distance.Outline = true
+    ESPHolder.Distance.Font = 2
+    ESPHolder.Distance.Color = Color3.fromRGB(200, 200, 255)
+    ESPHolder.Distance.Visible = false
+    ESPHolder.Distance.ZIndex = 3
+    ESPHolder.Distance.Transparency = 1
+    
+    ESPHolder.Health.Size = 13
+    ESPHolder.Health.Center = true
+    ESPHolder.Health.Outline = true
+    ESPHolder.Health.Font = 2
+    ESPHolder.Health.Color = Color3.fromRGB(0, 255, 0)
+    ESPHolder.Health.Visible = false
+    ESPHolder.Health.ZIndex = 3
+    ESPHolder.Health.Transparency = 1
+    
+    ESPHolder.HealthBar.Thickness = 3
+    ESPHolder.HealthBar.Color = Color3.fromRGB(0, 255, 0)
+    ESPHolder.HealthBar.Visible = false
+    ESPHolder.HealthBar.ZIndex = 3
+    ESPHolder.HealthBar.Transparency = 1
+    
+    ESPHolder.HealthBarOutline.Thickness = 5
+    ESPHolder.HealthBarOutline.Color = Color3.fromRGB(0, 0, 0)
+    ESPHolder.HealthBarOutline.Visible = false
+    ESPHolder.HealthBarOutline.ZIndex = 2
+    ESPHolder.HealthBarOutline.Transparency = 0.8
+    
+    ESPObjects[Player] = ESPHolder
+end
+
+local function removeESP(Player)
+    if ESPObjects[Player] then
+        for _, Drawing in pairs(ESPObjects[Player]) do
+            Drawing:Remove()
+        end
+        ESPObjects[Player] = nil
+    end
+end
+
+local function updateESP()
+    for Player, ESP in pairs(ESPObjects) do
+        pcall(function()
+            if Player and Player.Character and Player ~= LocalPlayer then
+                local Character = Player.Character
+                local Humanoid = Character:FindFirstChildOfClass("Humanoid")
+                local RootPart = Character:FindFirstChild("HumanoidRootPart")
+                local Head = Character:FindFirstChild("Head")
+                
+                if Humanoid and RootPart and Head and Humanoid.Health > 0 and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                    local Distance = (LocalPlayer.Character.HumanoidRootPart.Position - RootPart.Position).Magnitude
+                    
+                    if Distance > 5000 then
+                        ESP.Box.Visible = false
+                        ESP.BoxOutline.Visible = false
+                        ESP.CornerTL.Visible = false
+                        ESP.CornerTR.Visible = false
+                        ESP.CornerBL.Visible = false
+                        ESP.CornerBR.Visible = false
+                        ESP.Tracer.Visible = false
+                        ESP.Name.Visible = false
+                        ESP.Distance.Visible = false
+                        ESP.Health.Visible = false
+                        ESP.HealthBar.Visible = false
+                        ESP.HealthBarOutline.Visible = false
+                        return
+                    end
+                    
+                    local Vector, OnScreen = Camera:WorldToViewportPoint(RootPart.Position)
+                    
+                    if OnScreen and espEnabled then
+                        local HeadPos = Camera:WorldToViewportPoint(Head.Position + Vector3.new(0, 0.5, 0))
+                        local LegPos = Camera:WorldToViewportPoint(RootPart.Position - Vector3.new(0, 3, 0))
+                        
+                        local Height = math.abs(HeadPos.Y - LegPos.Y)
+                        local Width = Height / 2
+                        
+                        local IsTarget = (targetPlayer == Player)
+                        local BoxColor = IsTarget and Color3.fromRGB(0, 255, 100) or Color3.fromRGB(255, 50, 50)
+                        
+                        if IsTarget then
+                            local pulse = math.abs(math.sin(tick() * 3)) * 0.3 + 0.7
+                            BoxColor = Color3.fromRGB(0, 255 * pulse, 100)
+                        end
+                        
+                        ESP.Box.Size = Vector2.new(Width, Height)
+                        ESP.Box.Position = Vector2.new(Vector.X - Width / 2, Vector.Y - Height / 2)
+                        ESP.Box.Color = BoxColor
+                        ESP.Box.Visible = true
+                        
+                        ESP.BoxOutline.Size = Vector2.new(Width, Height)
+                        ESP.BoxOutline.Position = Vector2.new(Vector.X - Width / 2, Vector.Y - Height / 2)
+                        ESP.BoxOutline.Visible = true
+                        
+                        local cornerLength = math.min(Width, Height) / 4
+                        
+                        ESP.CornerTL.From = Vector2.new(Vector.X - Width / 2, Vector.Y - Height / 2)
+                        ESP.CornerTL.To = Vector2.new(Vector.X - Width / 2 + cornerLength, Vector.Y - Height / 2)
+                        ESP.CornerTL.Color = BoxColor
+                        ESP.CornerTL.Visible = true
+                        
+                        ESP.CornerTR.From = Vector2.new(Vector.X + Width / 2, Vector.Y - Height / 2)
+                        ESP.CornerTR.To = Vector2.new(Vector.X + Width / 2 - cornerLength, Vector.Y - Height / 2)
+                        ESP.CornerTR.Color = BoxColor
+                        ESP.CornerTR.Visible = true
+                        
+                        ESP.CornerBL.From = Vector2.new(Vector.X - Width / 2, Vector.Y + Height / 2)
+                        ESP.CornerBL.To = Vector2.new(Vector.X - Width / 2 + cornerLength, Vector.Y + Height / 2)
+                        ESP.CornerBL.Color = BoxColor
+                        ESP.CornerBL.Visible = true
+                        
+                        ESP.CornerBR.From = Vector2.new(Vector.X + Width / 2, Vector.Y + Height / 2)
+                        ESP.CornerBR.To = Vector2.new(Vector.X + Width / 2 - cornerLength, Vector.Y + Height / 2)
+                        ESP.CornerBR.Color = BoxColor
+                        ESP.CornerBR.Visible = true
+                        
+                        ESP.Tracer.Visible = false
+                        
+                        ESP.Name.Text = Player.Name .. (IsTarget and " ⚡ [LOCKED]" or "")
+                        ESP.Name.Position = Vector2.new(Vector.X, HeadPos.Y - 25)
+                        ESP.Name.Color = IsTarget and Color3.fromRGB(100, 255, 150) or Color3.fromRGB(255, 255, 255)
+                        ESP.Name.Visible = true
+                        
+                        local distColor = Distance < 100 and Color3.fromRGB(255, 100, 100) or 
+                                         Distance < 300 and Color3.fromRGB(255, 255, 100) or 
+                                         Color3.fromRGB(100, 200, 255)
+                        ESP.Distance.Text = math.floor(Distance) .. "m"
+                        ESP.Distance.Position = Vector2.new(Vector.X, LegPos.Y + 5)
+                        ESP.Distance.Color = distColor
+                        ESP.Distance.Visible = true
+                        
+                        local HealthPercent = math.floor((Humanoid.Health / Humanoid.MaxHealth) * 100)
+                        ESP.Health.Text = HealthPercent .. "❤"
+                        ESP.Health.Position = Vector2.new(Vector.X, LegPos.Y + 20)
+                        
+                        if HealthPercent > 75 then
+                            ESP.Health.Color = Color3.fromRGB(0, 255, 100)
+                        elseif HealthPercent > 50 then
+                            ESP.Health.Color = Color3.fromRGB(255, 255, 0)
+                        elseif HealthPercent > 25 then
+                            ESP.Health.Color = Color3.fromRGB(255, 150, 0)
+                        else
+                            ESP.Health.Color = Color3.fromRGB(255, 0, 0)
+                        end
+                        ESP.Health.Visible = true
+                        
+                        local healthBarHeight = Height * (Humanoid.Health / Humanoid.MaxHealth)
+                        local healthBarX = Vector.X - Width / 2 - 7
+                        
+                        ESP.HealthBarOutline.From = Vector2.new(healthBarX, Vector.Y - Height / 2)
+                        ESP.HealthBarOutline.To = Vector2.new(healthBarX, Vector.Y + Height / 2)
+                        ESP.HealthBarOutline.Visible = true
+                        
+                        ESP.HealthBar.From = Vector2.new(healthBarX, Vector.Y + Height / 2)
+                        ESP.HealthBar.To = Vector2.new(healthBarX, Vector.Y + Height / 2 - healthBarHeight)
+                        ESP.HealthBar.Color = ESP.Health.Color
+                        ESP.HealthBar.Visible = true
+                    else
+                        ESP.Box.Visible = false
+                        ESP.BoxOutline.Visible = false
+                        ESP.CornerTL.Visible = false
+                        ESP.CornerTR.Visible = false
+                        ESP.CornerBL.Visible = false
+                        ESP.CornerBR.Visible = false
+                        ESP.Tracer.Visible = false
+                        ESP.Name.Visible = false
+                        ESP.Distance.Visible = false
+                        ESP.Health.Visible = false
+                        ESP.HealthBar.Visible = false
+                        ESP.HealthBarOutline.Visible = false
+                    end
+                else
+                    ESP.Box.Visible = false
+                    ESP.BoxOutline.Visible = false
+                    ESP.CornerTL.Visible = false
+                    ESP.CornerTR.Visible = false
+                    ESP.CornerBL.Visible = false
+                    ESP.CornerBR.Visible = false
+                    ESP.Tracer.Visible = false
+                    ESP.Name.Visible = false
+                    ESP.Distance.Visible = false
+                    ESP.Health.Visible = false
+                    ESP.HealthBar.Visible = false
+                    ESP.HealthBarOutline.Visible = false
+                end
+            end
+        end)
+    end
+end
+
+-- X-Ray Function
+local function toggleXRay(enabled)
+    if enabled then
+        for _, obj in pairs(workspace:GetDescendants()) do
+            if obj:IsA("BasePart") and not obj:IsDescendantOf(LocalPlayer.Character) then
+                originalTransparencies[obj] = obj.Transparency
+                obj.Transparency = 0.7
+            end
+        end
+    else
+        for obj, transparency in pairs(originalTransparencies) do
+            if obj and obj.Parent then
+                obj.Transparency = transparency
+            end
+        end
+        originalTransparencies = {}
+    end
+end
+
+-- Infinite Jump Function
+local function toggleInfiniteJump(enabled)
+    if enabled then
+        infiniteJumpConnection = UserInputService.JumpRequest:Connect(function()
+            if LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
+                LocalPlayer.Character:FindFirstChildOfClass("Humanoid"):ChangeState(Enum.HumanoidStateType.Jumping)
+            end
+        end)
+    else
+        if infiniteJumpConnection then
+            infiniteJumpConnection:Disconnect()
+            infiniteJumpConnection = nil
+        end
+    end
+end
+
+-- God Mode Functions
+local function cleanupGodmodeInternal()
+    isGodmode = false
+    if gmConnection then gmConnection:Disconnect() gmConnection = nil end
+    if noclipConn then noclipConn:Disconnect() noclipConn = nil end
+    if deathConn then deathConn:Disconnect() deathConn = nil end
+    local char = LocalPlayer.Character
+    if char then
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if root and ghostClone and ghostClone:FindFirstChild("HumanoidRootPart") then
+            pcall(function()
+                root.CFrame = ghostClone.HumanoidRootPart.CFrame
+            end)
+        end
+        if char:FindFirstChild("Humanoid") then
+            pcall(function()
+                char.Humanoid.PlatformStand = false
+                Camera.CameraSubject = char.Humanoid
+            end)
+        end
+    end
+    if ghostClone then
+        pcall(function() ghostClone:Destroy() end)
+        ghostClone = nil
+    end
+end
+
+local function cleanupGodmode()
+    godmodeUserWants = false
+    cleanupGodmodeInternal()
+end
+
+local function enableGodmode()
+    local char = LocalPlayer.Character
+    if not char then return end
+    
+    local root = char:WaitForChild("HumanoidRootPart", 5)
+    local humanoid = char:WaitForChild("Humanoid", 5)
+    if not root or not humanoid then return end
+    
+    cleanupGodmodeInternal()
+    
+    isGodmode = true
+    godmodeUserWants = true
+    
+    char.Archivable = true
+    ghostClone = char:Clone()
+    ghostClone.Name = "GhostDecoy"
+    ghostClone.Parent = workspace
+    char.Archivable = false
+    
+    for _, v in pairs(ghostClone:GetDescendants()) do
+        if v:IsA("BasePart") then
+            v.Transparency = (v.Name:lower():find("root") or v.Name:lower():find("collision")) and 0.5 or 0
+            v.CanCollide = true
+        elseif v:IsA("Decal") or v:IsA("Texture") then
+            v.Transparency = 0
+        end
+    end
+    
+    if char:FindFirstChild("Animate") then
+        char.Animate:Clone().Parent = ghostClone
+    end
+    
+    humanoid.PlatformStand = true
+    Camera.CameraSubject = ghostClone:FindFirstChildOfClass("Humanoid")
+    
+    noclipConn = RunService.Stepped:Connect(function()
+        pcall(function()
+            if char then
+                for _, v in pairs(char:GetDescendants()) do
+                    if v:IsA("BasePart") then v.CanCollide = false end
+                end
+            end
+        end)
+    end)
+    
+    gmConnection = RunService.Heartbeat:Connect(function()
+        pcall(function()
+            if ghostClone and ghostClone:FindFirstChild("HumanoidRootPart") and char and char:FindFirstChild("HumanoidRootPart") and char:FindFirstChild("Humanoid") then
+                local moveDir = char.Humanoid.MoveDirection
+                ghostClone.Humanoid:Move(moveDir, false)
+                ghostClone.Humanoid.Jump = char.Humanoid.Jump
+                if moveDir.Magnitude > 0 then
+                    local targetRot = CFrame.lookAt(ghostClone.HumanoidRootPart.Position, ghostClone.HumanoidRootPart.Position + moveDir)
+                    ghostClone.HumanoidRootPart.CFrame = ghostClone.HumanoidRootPart.CFrame:Lerp(targetRot, 0.25)
+                end
+                if tick() - lastPromptUpdate > 0.5 then
+                    for _, p in pairs(workspace:GetDescendants()) do
+                        if p:IsA("ProximityPrompt") then
+                            p.MaxActivationDistance = 25
+                            p.RequiresLineOfSight = false
+                        end
+                    end
+                    lastPromptUpdate = tick()
+                end
+                char.HumanoidRootPart.CFrame = ghostClone.HumanoidRootPart.CFrame * CFrame.new(0, -15, 0)
+                char.HumanoidRootPart.Velocity = Vector3.zero
+            else
+                cleanupGodmodeInternal()
+            end
+        end)
+    end)
+    
+    deathConn = humanoid.Died:Connect(function()
+        cleanupGodmodeInternal()
+    end)
+end
+
+-- Instant Interact Functions
+local function applyInstantPrompt(prompt)
+    if prompt:IsA("ProximityPrompt") then
+        prompt.HoldDuration = 0
+        prompt.MaxActivationDistance = math.max(prompt.MaxActivationDistance, 15)
+        prompt.RequiresLineOfSight = false
+    end
+end
+
+local function startInstantInteract()
+    for _, obj in pairs(workspace:GetDescendants()) do
+        if obj:IsA("ProximityPrompt") then
+            applyInstantPrompt(obj)
+        end
+    end
+
+    interactDescendantConn = workspace.DescendantAdded:Connect(function(obj)
+        if interactActive and obj:IsA("ProximityPrompt") then
+            task.wait()
+            applyInstantPrompt(obj)
+        end
+    end)
+
+    interactConnection = task.spawn(function()
+        while interactActive do
+            for _, obj in pairs(workspace:GetDescendants()) do
+                if obj:IsA("ProximityPrompt") then
+                    obj.HoldDuration = 0
+                    obj.RequiresLineOfSight = false
+                end
+            end
+            task.wait(0.3)
+        end
+    end)
+end
+
+local function stopInstantInteract()
+    if interactDescendantConn then
+        interactDescendantConn:Disconnect()
+        interactDescendantConn = nil
+    end
+    interactConnection = nil
+end
+
+-- ============================================
+-- Auto Hit Functions (Resilient - Never stops on damage)
+-- ============================================
+local function findAttackRemote()
+    local commonNames = {
+        "Attack", "Hit", "Damage", "Combat", "Swing", "Punch", "Kick",
+        "attack", "hit", "damage", "combat", "swing", "punch", "kick",
+        "AttackEvent", "HitEvent", "DamageEvent", "CombatEvent",
+        "AttackRemote", "HitRemote", "DamageRemote", "CombatRemote",
+        "RE", "RemoteEvent", "Weapon", "weapon", "Fight", "fight",
+        "MeleeAttack", "meleeAttack", "PlayerAttack", "playerAttack"
+    }
+    
+    for _, name in pairs(commonNames) do
+        local remote = ReplicatedStorage:FindFirstChild(name, true)
+        if remote and (remote:IsA("RemoteEvent") or remote:IsA("RemoteFunction")) then
+            return remote
+        end
+    end
+    
+    local char = LocalPlayer.Character
+    if char then
+        for _, tool in pairs(char:GetChildren()) do
+            if tool:IsA("Tool") then
+                for _, child in pairs(tool:GetDescendants()) do
+                    if child:IsA("RemoteEvent") or child:IsA("RemoteFunction") then
+                        return child
+                    end
+                end
+            end
+        end
+    end
+    
+    local backpack = LocalPlayer:FindFirstChild("Backpack")
+    if backpack then
+        for _, tool in pairs(backpack:GetChildren()) do
+            if tool:IsA("Tool") then
+                for _, child in pairs(tool:GetDescendants()) do
+                    if child:IsA("RemoteEvent") or child:IsA("RemoteFunction") then
+                        return child
+                    end
+                end
+            end
+        end
+    end
+    
+    return nil
+end
+
+local function getClosestPlayerInRange(range)
+    local closestPlayer = nil
+    local shortestDist = range
+    local char = LocalPlayer.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return nil end
+    local myPos = char.HumanoidRootPart.Position
+    
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+            local humanoid = player.Character:FindFirstChild("Humanoid")
+            if humanoid and humanoid.Health > 0 then
+                local dist = (player.Character.HumanoidRootPart.Position - myPos).Magnitude
+                if dist < shortestDist then
+                    closestPlayer = player
+                    shortestDist = dist
+                end
+            end
+        end
+    end
+    
+    return closestPlayer
+end
+
+local function doAttack()
+    pcall(function()
+        local char = LocalPlayer.Character
+        if not char then return end
+        local humanoid = char:FindFirstChild("Humanoid")
+        if not humanoid then return end
+        
+        -- Skip attack only if dead, but do NOT stop the loop
+        if humanoid.Health <= 0 then return end
+        
+        -- Auto-equip tool if none equipped
+        local tool = char:FindFirstChildOfClass("Tool")
+        if not tool then
+            pcall(function()
+                local backpack = LocalPlayer:FindFirstChild("Backpack")
+                if backpack then
+                    local bTool = backpack:FindFirstChildOfClass("Tool")
+                    if bTool then
+                        humanoid:EquipTool(bTool)
+                        task.wait(0.15)
+                        tool = char:FindFirstChildOfClass("Tool")
+                    end
+                end
+            end)
+        end
+        
+        local nearestPlayer = getClosestPlayerInRange(25)
+        
+        -- Method 1: Activate tool (works on Android + Desktop)
+        if tool then
+            pcall(function() tool:Activate() end)
+        end
+        
+        -- Method 2: VirtualInputManager (Desktop primarily)
+        if not isMobile then
+            pcall(function()
+                local vim = game:GetService("VirtualInputManager")
+                if vim then
+                    vim:SendMouseButtonEvent(
+                        Camera.ViewportSize.X / 2,
+                        Camera.ViewportSize.Y / 2,
+                        0, true, game, 1
+                    )
+                    task.wait(0.03)
+                    vim:SendMouseButtonEvent(
+                        Camera.ViewportSize.X / 2,
+                        Camera.ViewportSize.Y / 2,
+                        0, false, game, 1
+                    )
+                end
+            end)
+        end
+        
+        -- Method 3: Fire attack remotes (works on Android + Desktop)
+        pcall(function()
+            local remote = findAttackRemote()
+            if remote then
+                if remote:IsA("RemoteEvent") then
+                    if nearestPlayer and nearestPlayer.Character then
+                        remote:FireServer(nearestPlayer.Character, nearestPlayer.Character:FindFirstChild("HumanoidRootPart"))
+                    else
+                        remote:FireServer()
+                    end
+                elseif remote:IsA("RemoteFunction") then
+                    if nearestPlayer and nearestPlayer.Character then
+                        remote:InvokeServer(nearestPlayer.Character, nearestPlayer.Character:FindFirstChild("HumanoidRootPart"))
+                    else
+                        remote:InvokeServer()
+                    end
+                end
+            end
+        end)
+        
+        -- Method 4: VirtualUser fallback
+        pcall(function()
+            local vu = game:GetService("VirtualUser")
+            if vu then
+                vu:ClickButton1(Vector2.new(
+                    Camera.ViewportSize.X / 2,
+                    Camera.ViewportSize.Y / 2
+                ))
+            end
+        end)
+        
+        -- Method 5: Mouse1Click simulation for mobile
+        if isMobile then
+            pcall(function()
+                if tool then
+                    -- Simulate mouse button via tool activation repeatedly
+                    tool:Activate()
+                end
+            end)
+        end
+    end)
+end
+
+local function startAutoHit()
+    -- Cancel any existing auto-hit thread
+    if autoHitConnection then
+        pcall(function()
+            if type(autoHitConnection) == "thread" then
+                task.cancel(autoHitConnection)
+            end
+        end)
+        autoHitConnection = nil
+    end
+    
+    autoHitConnection = task.spawn(function()
+        while autoHitEnabled do
+            doAttack()
+            task.wait(attackSpeed)
+        end
+    end)
+end
+
+local function stopAutoHit()
+    autoHitEnabled = false
+    if autoHitConnection then
+        pcall(function()
+            if type(autoHitConnection) == "thread" then
+                task.cancel(autoHitConnection)
+            end
+        end)
+        autoHitConnection = nil
+    end
+    if autoHitCharConn then
+        autoHitCharConn:Disconnect()
+        autoHitCharConn = nil
+    end
+end
+
+-- ============================================
+-- Anti Hit Functions (Aggressive Force Field)
+-- Multi-layer system: self-teleport + enemy push + dodge
+-- ============================================
+local function startAntiHit()
+    if antiHitConnection then return end
+    
+    antiHitConnection = RunService.Heartbeat:Connect(function()
+        if not antiHitEnabled then return end
+        
+        pcall(function()
+            local char = LocalPlayer.Character
+            if not char then return end
+            local root = char:FindFirstChild("HumanoidRootPart")
+            local hum = char:FindFirstChild("Humanoid")
+            if not root or not hum or hum.Health <= 0 then return end
+            
+            local myPos = root.Position
+            local threats = {}
+            
+            -- =============================================
+            -- STEP 1: Gather all enemy threats
+            -- =============================================
+            for _, player in pairs(Players:GetPlayers()) do
+                if player ~= LocalPlayer and player.Character then
+                    local eRoot = player.Character:FindFirstChild("HumanoidRootPart")
+                    local eHum = player.Character:FindFirstChild("Humanoid")
+                    if eRoot and eHum and eHum.Health > 0 then
+                        local diff = myPos - eRoot.Position
+                        local dist = diff.Magnitude
+                        if dist < antiHitSafeDist + 15 and dist > 0.1 then
+                            local lookVec = eRoot.CFrame.LookVector
+                            local dirToUs = diff.Unit
+                            local dot = lookVec:Dot(dirToUs)
+                            
+                            table.insert(threats, {
+                                player = player,
+                                root = eRoot,
+                                char = player.Character,
+                                dist = dist,
+                                dirAway = dirToUs,
+                                dot = dot,
+                                isAiming = dot > 0.25
+                            })
+                        end
+                    end
+                end
+            end
+            
+            if #threats == 0 then return end
+            
+            -- Sort by distance (closest = highest priority)
+            table.sort(threats, function(a, b) return a.dist < b.dist end)
+            
+            -- =============================================
+            -- STEP 2: Calculate optimal escape direction
+            -- (weighted vector away from all threats)
+            -- =============================================
+            local escapeVec = Vector3.zero
+            local totalWeight = 0
+            
+            for _, t in ipairs(threats) do
+                -- Closer enemies and enemies aiming at us get more weight
+                local weight = (1 / math.max(t.dist, 0.5)) * (t.isAiming and 3 or 1)
+                escapeVec = escapeVec + t.dirAway * weight
+                totalWeight = totalWeight + weight
+            end
+            
+            if totalWeight > 0 and escapeVec.Magnitude > 0.01 then
+                escapeVec = escapeVec.Unit
+            else
+                escapeVec = threats[1].dirAway
+            end
+            
+            -- Keep escape on horizontal plane
+            escapeVec = Vector3.new(escapeVec.X, 0, escapeVec.Z)
+            if escapeVec.Magnitude > 0.01 then
+                escapeVec = escapeVec.Unit
+            end
+            
+            local closest = threats[1]
+            
+            -- =============================================
+            -- STEP 3: LAYER 1 - Push enemies away
+            -- (attempt - works when we have network ownership)
+            -- =============================================
+            for _, t in ipairs(threats) do
+                pcall(function()
+                    if t.dist < antiHitSafeDist then
+                        local pushDir = -t.dirAway -- Direction FROM us TO enemy
+                        local pushForce = math.clamp((antiHitSafeDist - t.dist) / antiHitSafeDist, 0.3, 1)
+                        
+                        -- Teleport enemy outside our safe zone
+                        local targetPos = myPos + pushDir * (antiHitSafeDist + 3)
+                        t.root.CFrame = CFrame.new(
+                            targetPos.X,
+                            t.root.Position.Y,
+                            targetPos.Z
+                        ) * CFrame.Angles(0, math.atan2(-pushDir.X, -pushDir.Z), 0)
+                        
+                        -- Apply outward velocity
+                        t.root.Velocity = pushDir * 70 * pushForce + Vector3.new(0, 15, 0)
+                        
+                        -- Cancel any inward velocity the enemy has
+                        local eVel = t.root.Velocity
+                        local inwardComponent = eVel:Dot(t.dirAway)
+                        if inwardComponent > 0 then
+                            t.root.Velocity = eVel - t.dirAway * inwardComponent * 2
+                        end
+                    end
+                end)
+            end
+            
+            -- =============================================
+            -- STEP 4: LAYER 2 - Teleport ourselves away
+            -- (reliable - we fully control our own character)
+            -- =============================================
+            if closest.dist < antiHitSafeDist then
+                local deficit = antiHitSafeDist - closest.dist + 4
+                local newPos = myPos + escapeVec * deficit
+                
+                -- Preserve our current Y rotation
+                local _, rotY, _ = root.CFrame:ToEulerAnglesYXZ()
+                root.CFrame = CFrame.new(newPos.X, root.Position.Y, newPos.Z) * CFrame.Angles(0, rotY, 0)
+                
+                -- Boost velocity away
+                root.Velocity = Vector3.new(
+                    escapeVec.X * 55,
+                    math.max(root.Velocity.Y, 0),
+                    escapeVec.Z * 55
+                )
+            end
+            
+            -- =============================================
+            -- STEP 5: LAYER 3 - Emergency teleport (very close)
+            -- =============================================
+            if closest.dist < 7 then
+                local emergencyDist = 12 - closest.dist
+                local newPos = myPos + escapeVec * emergencyDist
+                local _, rotY, _ = root.CFrame:ToEulerAnglesYXZ()
+                root.CFrame = CFrame.new(newPos.X, root.Position.Y, newPos.Z) * CFrame.Angles(0, rotY, 0)
+                root.Velocity = escapeVec * 90 + Vector3.new(0, 20, 0)
+                
+                -- Extra enemy push on emergency
+                pcall(function()
+                    local pushDir = -closest.dirAway
+                    closest.root.CFrame = closest.root.CFrame + pushDir * (10 - closest.dist)
+                    closest.root.Velocity = pushDir * 100 + Vector3.new(0, 25, 0)
+                end)
+            end
+            
+            -- =============================================
+            -- STEP 6: LAYER 4 - Micro-dodge (position jitter)
+            -- Makes hit registration fail even if distance check passes
+            -- =============================================
+            if closest.dist < antiHitSafeDist + 8 then
+                local t = tick()
+                local jitterStrength = math.clamp((antiHitSafeDist + 8 - closest.dist) / 10, 0.3, 2)
+                local jitterX = math.sin(t * 18) * jitterStrength
+                local jitterZ = math.cos(t * 18) * jitterStrength
+                root.CFrame = root.CFrame + Vector3.new(jitterX, 0, jitterZ)
+            end
+            
+            -- =============================================
+            -- STEP 7: LAYER 5 - Speed boost when threatened
+            -- Temporarily boost walkspeed to outrun chasers
+            -- =============================================
+            if closest.dist < antiHitSafeDist + 5 then
+                pcall(function()
+                    if hum.WalkSpeed < 30 then
+                        hum.WalkSpeed = 30
+                    end
+                end)
+            else
+                pcall(function()
+                    if hum.WalkSpeed == 30 then
+                        hum.WalkSpeed = 16
+                    end
+                end)
+            end
+            
+            -- =============================================
+            -- STEP 8: LAYER 6 - Noclip our parts briefly
+            -- So weapon Touched events don't register
+            -- =============================================
+            for _, t in ipairs(threats) do
+                if t.dist < antiHitSafeDist and t.isAiming then
+                    for _, part in pairs(char:GetDescendants()) do
+                        if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+                            pcall(function()
+                                part.CanCollide = false
+                            end)
+                        end
+                    end
+                    break
+                end
+            end
+        end)
+    end)
+end
+
+local function stopAntiHit()
+    antiHitEnabled = false
+    if antiHitConnection then
+        antiHitConnection:Disconnect()
+        antiHitConnection = nil
+    end
+    -- Reset walkspeed
+    pcall(function()
+        local char = LocalPlayer.Character
+        if char and char:FindFirstChild("Humanoid") then
+            if char.Humanoid.WalkSpeed == 30 then
+                char.Humanoid.WalkSpeed = 16
+            end
+        end
+    end)
+    -- Re-enable collision
+    pcall(function()
+        local char = LocalPlayer.Character
+        if char then
+            for _, part in pairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = true
+                end
+            end
+        end
+    end)
+end
+
+-- ============================================
+-- Character Respawn Handler
+-- ============================================
+LocalPlayer.CharacterAdded:Connect(function(char)
+    char:WaitForChild("HumanoidRootPart", 10)
+    char:WaitForChild("Humanoid", 10)
+    task.wait(1)
+    
+    -- God Mode respawn
+    if godmodeUserWants then
+        enableGodmode()
+    end
+    
+    -- Auto Hit respawn (keeps attacking after death)
+    if autoHitEnabled then
+        task.wait(0.5)
+        if autoHitEnabled then
+            startAutoHit()
+        end
+    end
+end)
+
+-- Create Home Tab (Required for Luna)
+Window:CreateHomeTab({
+    SupportedExecutors = {
+        "Synapse X", "Krnl", "Fluxus", "Script-Ware", 
+        "Electron", "Solara", "Wave", "Delta", "Xeno"
+    },
+    DiscordInvite = nil,
+    Icon = 1
+})
+
+-- Create Tabs
+local CombatTab = Window:CreateTab({
+    Name = "Combat",
+    Icon = "gps_fixed",
+    ImageSource = "Material",
+    ShowTitle = true
+})
+
+local VisualsTab = Window:CreateTab({
+    Name = "Visuals",
+    Icon = "visibility",
+    ImageSource = "Material",
+    ShowTitle = true
+})
+
+local MiscTab = Window:CreateTab({
+    Name = "Misc",
+    Icon = "more_horiz",
+    ImageSource = "Material",
+    ShowTitle = true
+})
+
+local SettingsTab = Window:CreateTab({
+    Name = "Settings",
+    Icon = "settings",
+    ImageSource = "Material",
+    ShowTitle = true
+})
+
+-- Combat Section
+local AimlockSection = CombatTab:CreateSection("Aimlock")
+
+local AimlockToggle = CombatTab:CreateToggle({
+    Name = "Enable Aimlock",
+    CurrentValue = false,
+    Flag = "AimlockToggle",
+    Callback = function(Value)
+        aimlockEnabled = Value
+        createFOVCircle()
+    end,
+})
+
+local SmoothAimToggle = CombatTab:CreateToggle({
+    Name = "Smooth Aim",
+    CurrentValue = false,
+    Flag = "SmoothAimToggle",
+    Callback = function(Value)
+        smoothAim = Value
+    end,
+})
+
+local SmoothnessSlider = CombatTab:CreateSlider({
+    Name = "Smoothness",
+    Range = {0.1, 1},
+    Increment = 0.05,
+    CurrentValue = 0.4,
+    Flag = "SmoothnessSlider",
+    Callback = function(Value)
+        smoothness = Value
+    end,
+})
+
+local WallCheckToggle = CombatTab:CreateToggle({
+    Name = "Wall Check",
+    CurrentValue = true,
+    Flag = "WallCheckToggle",
+    Callback = function(Value)
+        wallCheck = Value
+    end,
+})
+
+local AimPartDropdown = CombatTab:CreateDropdown({
+    Name = "Target Body Part",
+    Options = {"Head", "UpperTorso", "LowerTorso", "HumanoidRootPart"},
+    CurrentOption = {"Head"},
+    MultipleOptions = false,
+    Flag = "AimPartDropdown",
+    Callback = function(Option)
+        if type(Option) == "table" then
+            aimPart = Option[1]
+        else
+            aimPart = Option
+        end
+    end,
+})
+
+local FOVSection = CombatTab:CreateSection("FOV Circle")
+
+local FOVToggle = CombatTab:CreateToggle({
+    Name = "Enable FOV",
+    CurrentValue = false,
+    Flag = "FOVToggle",
+    Callback = function(Value)
+        fovEnabled = Value
+        createFOVCircle()
+    end,
+})
+
+local FOVSlider = CombatTab:CreateSlider({
+    Name = "FOV Size",
+    Range = {50, 500},
+    Increment = 10,
+    CurrentValue = 100,
+    Flag = "FOVSlider",
+    Callback = function(Value)
+        fovSize = Value
+        if fovCircle then
+            fovCircle.Radius = Value
+        end
+    end,
+})
+
+local FOVColorPicker = CombatTab:CreateColorPicker({
+    Name = "FOV Color",
+    Color = Color3.fromRGB(255, 255, 255),
+    Flag = "FOVColor",
+    Callback = function(Value)
+        if fovCircle then
+            fovCircle.Color = Value
+        end
+    end
+})
+
+local AimbotSection = CombatTab:CreateSection("Aimbot (Silent)")
+
+local AimbotToggle = CombatTab:CreateToggle({
+    Name = "Enable Aimbot",
+    CurrentValue = false,
+    Flag = "AimbotToggle",
+    Callback = function(Value)
+        aimbotEnabled = Value
+    end,
+})
+
+-- Visuals Section
+local ESPSection = VisualsTab:CreateSection("ESP")
+
+local ESPToggle = VisualsTab:CreateToggle({
+    Name = "Enable ESP",
+    CurrentValue = false,
+    Flag = "ESPToggle",
+    Callback = function(Value)
+        espEnabled = Value
+        
+        if Value then
+            for _, player in pairs(Players:GetPlayers()) do
+                if player ~= LocalPlayer then
+                    createESP(player)
+                end
+            end
+            
+            RunService:BindToRenderStep("UpdateESP", Enum.RenderPriority.Camera.Value + 1, updateESP)
+        else
+            RunService:UnbindFromRenderStep("UpdateESP")
+            
+            for player, _ in pairs(ESPObjects) do
+                removeESP(player)
+            end
+        end
+    end,
+})
+
+local ESPColorPicker = VisualsTab:CreateColorPicker({
+    Name = "ESP Color",
+    Color = Color3.fromRGB(255, 0, 0),
+    Flag = "ESPColor",
+    Callback = function(Value)
+        for _, ESP in pairs(ESPObjects) do
+            ESP.Box.Color = Value
+            ESP.Tracer.Color = Value
+        end
+    end
+})
+
+local XRaySection = VisualsTab:CreateSection("X-Ray")
+
+local XRayToggle = VisualsTab:CreateToggle({
+    Name = "Enable X-Ray",
+    CurrentValue = false,
+    Flag = "XRayToggle",
+    Callback = function(Value)
+        xrayEnabled = Value
+        toggleXRay(Value)
+    end,
+})
+
+local XRaySlider = VisualsTab:CreateSlider({
+    Name = "X-Ray Transparency",
+    Range = {0, 1},
+    Increment = 0.1,
+    CurrentValue = 0.7,
+    Flag = "XRayTransparency",
+    Callback = function(Value)
+        if xrayEnabled then
+            for obj, _ in pairs(originalTransparencies) do
+                if obj and obj.Parent then
+                    obj.Transparency = Value
+                end
+            end
+        end
+    end,
+})
+
+-- Misc Section
+local MovementSection = MiscTab:CreateSection("Movement")
+
+local InfiniteJumpToggle = MiscTab:CreateToggle({
+    Name = "Infinite Jump",
+    CurrentValue = false,
+    Flag = "InfiniteJump",
+    Callback = function(Value)
+        infiniteJumpEnabled = Value
+        toggleInfiniteJump(Value)
+    end,
+})
+
+local SurvivalSection = MiscTab:CreateSection("Survival")
+
+local GodModeToggle = MiscTab:CreateToggle({
+    Name = "God Mode",
+    CurrentValue = false,
+    Flag = "GodMode",
+    Callback = function(Value)
+        if Value then
+            enableGodmode()
+        else
+            cleanupGodmode()
+        end
+    end,
+})
+
+local InteractSection = MiscTab:CreateSection("Interactions")
+
+local InstantInteractToggle = MiscTab:CreateToggle({
+    Name = "Instant Interact",
+    CurrentValue = false,
+    Flag = "InstantInteract",
+    Callback = function(Value)
+        interactActive = Value
+        if Value then
+            startInstantInteract()
+        else
+            stopInstantInteract()
+        end
+    end,
+})
+
+local CombatMiscSection = MiscTab:CreateSection("Combat")
+
+local AutoHitToggle = MiscTab:CreateToggle({
+    Name = "Auto Hit",
+    CurrentValue = false,
+    Flag = "AutoHit",
+    Callback = function(Value)
+        autoHitEnabled = Value
+        if Value then
+            startAutoHit()
+        else
+            stopAutoHit()
+        end
+    end,
+})
+
+local AttackSpeedSlider = MiscTab:CreateSlider({
+    Name = "Attack Speed",
+    Range = {0.05, 2},
+    Increment = 0.05,
+    CurrentValue = 0.3,
+    Flag = "AttackSpeed",
+    Callback = function(Value)
+        attackSpeed = Value
+    end,
+})
+
+local AntiHitToggle = MiscTab:CreateToggle({
+    Name = "Anti Hit",
+    CurrentValue = false,
+    Flag = "AntiHit",
+    Callback = function(Value)
+        antiHitEnabled = Value
+        if Value then
+            startAntiHit()
+        else
+            stopAntiHit()
+        end
+    end,
+})
+
+local AntiHitDistSlider = MiscTab:CreateSlider({
+    Name = "Anti Hit Distance",
+    Range = {5, 30},
+    Increment = 1,
+    CurrentValue = 14,
+    Flag = "AntiHitDist",
+    Callback = function(Value)
+        antiHitSafeDist = Value
+    end,
+})
+
+-- Settings Section
+local InfoSection = SettingsTab:CreateSection("Info")
+
+SettingsTab:CreateParagraph({
+    Title = "Xenure Hub | Flick",
+    Content = "A clean and simple FPS script for Flick.\nCompatible with Android and Desktop.\n\nFeatures:\n- Aimlock with FOV\n- Silent Aimbot\n- ESP (Boxes, Names, Health, Distance)\n- X-Ray Vision\n- God Mode (persists on death)\n- Instant Interact\n- Auto Hit (never stops on damage, auto-restarts)\n- Anti Hit (6-layer force field system)\n- Anti Hit Distance slider\n- Attack Speed Control\n\nCreated by Xenure"
+})
+
+local ControlsSection = SettingsTab:CreateSection("Controls")
+
+SettingsTab:CreateKeybind({
+    Name = "Toggle UI",
+    CurrentKeybind = "RightShift",
+    HoldToInteract = false,
+    Flag = "UIKeybind",
+    Callback = function(Keybind)
+    end,
+})
+
+SettingsTab:CreateButton({
+    Name = "Destroy GUI",
+    Callback = function()
+        cleanupGodmode()
+        stopInstantInteract()
+        stopAutoHit()
+        stopAntiHit()
+        Luna:Destroy()
+    end,
+})
+
+-- Main Loop
+RunService.RenderStepped:Connect(function()
+    updateFOVCircle()
+    aimlock()
+    aimbot()
+end)
+
+-- Player Events
+Players.PlayerAdded:Connect(function(player)
+    if espEnabled and player ~= LocalPlayer then
+        createESP(player)
+    end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    removeESP(player)
+end)
+
+-- Notifications
+Luna:Notification({
+    Title = "Xenure Hub Loaded",
+    Content = "Script loaded successfully! Platform: " .. (isMobile and "Mobile" or "Desktop"),
+    Icon = "check_circle",
+    ImageSource = "Material"
+})
